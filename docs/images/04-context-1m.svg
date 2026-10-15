@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+  <rect width="720" height="420" fill="#eef1f5"/>
+  <rect x="60" y="40" width="600" height="340" rx="10" fill="#fff" stroke="#c9d0d8"/>
+  <rect x="60" y="40" width="600" height="44" rx="10" fill="#f5f7fa"/>
+  <text x="84" y="68" font-size="15" fill="#333" font-weight="bold">设置 → 模型</text>
+  <!-- model row -->
+  <text x="96" y="130" font-size="14" fill="#333" font-weight="bold">deepseek-v4.1-flash</text>
+  <text x="96" y="154" font-size="12" fill="#889">主力编码模型</text>
+  <!-- dropdown -->
+  <text x="380" y="122" font-size="12" fill="#889">上下文窗口</text>
+  <rect x="380" y="134" width="160" height="34" rx="6" fill="#fff" stroke="#3b4bdc" stroke-width="2"/>
+  <text x="398" y="156" font-size="14" fill="#333">1M</text>
+  <path d="M 512 146 L 522 156 L 532 146" stroke="#333" stroke-width="2" fill="none"/>
+  <!-- open menu -->
+  <rect x="380" y="176" width="160" height="96" rx="6" fill="#fff" stroke="#c9d0d8"/>
+  <text x="398" y="202" font-size="13" fill="#667">32K</text>
+  <text x="398" y="230" font-size="13" fill="#667">128K</text>
+  <rect x="388" y="240" width="144" height="26" rx="4" fill="#e3e9ff"/>
+  <text x="398" y="258" font-size="13" fill="#3b4bdc" font-weight="bold">1M</text>
+  <!-- callout -->
+  <circle cx="568" cy="140" r="16" fill="#c0392b"/>
+  <text x="562" y="146" font-size="16" fill="#fff" font-weight="bold">1</text>
+  <!-- notes -->
+  <text x="96" y="320" font-size="12" fill="#889">选 1M 后，settings.json 的 autoCompactWindow≈888889 会在约 800K 触发压缩（默认 900K+ 才压，等于不压）</text>
+  <text x="24" y="404" font-size="12" fill="#889">示意图：实际界面以你的 WorkBuddy 版本为准</text>
+</svg>

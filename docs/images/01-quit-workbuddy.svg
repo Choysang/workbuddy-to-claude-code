@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+  <rect width="720" height="420" fill="#eef1f5"/>
+  <!-- desktop hint -->
+  <text x="24" y="36" font-size="14" fill="#667">WorkBuddy 窗口关闭后，进程仍在 —— 必须从托盘退出</text>
+  <!-- taskbar -->
+  <rect x="0" y="352" width="720" height="68" fill="#2b2f36"/>
+  <rect x="560" y="368" width="140" height="36" rx="6" fill="#3a4048"/>
+  <text x="580" y="391" font-size="13" fill="#cfd6dd">托盘图标区</text>
+  <circle cx="548" cy="386" r="10" fill="#4b5bdc"/>
+  <text x="543" y="391" font-size="11" fill="#fff">W</text>
+  <!-- popup menu -->
+  <rect x="380" y="150" width="200" height="160" rx="8" fill="#fff" stroke="#c9d0d8"/>
+  <text x="400" y="182" font-size="14" fill="#333">打开主面板</text>
+  <text x="400" y="218" font-size="14" fill="#333">新建会话</text>
+  <text x="400" y="254" font-size="14" fill="#333">检查更新</text>
+  <rect x="388" y="268" width="184" height="32" rx="6" fill="#fde8e8"/>
+  <text x="400" y="290" font-size="14" fill="#c0392b" font-weight="bold">退出 WorkBuddy</text>
+  <!-- arrow -->
+  <path d="M 500 300 L 520 340 L 536 380" stroke="#c0392b" stroke-width="3" fill="none"/>
+  <polygon points="536,380 528,368 546,368" fill="#c0392b"/>
+  <!-- callout -->
+  <circle cx="592" cy="284" r="16" fill="#c0392b"/>
+  <text x="586" y="290" font-size="16" fill="#fff" font-weight="bold">1</text>
+  <text x="24" y="404" font-size="12" fill="#889">示意图：实际菜单样式以你的 WorkBuddy 版本为准</text>
+</svg>

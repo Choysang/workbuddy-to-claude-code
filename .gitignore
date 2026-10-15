@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+*.orig
+backups/
+analysis/
+tests/fixtures/code-prompt-*.tpl
