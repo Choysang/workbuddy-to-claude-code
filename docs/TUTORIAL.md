@@ -1,8 +1,20 @@
 # 把 WorkBuddy 调成 Claude Code：配置层改造完全指南
 
 > 适用版本：WorkBuddy AI 5.6.x – 5.7.x（Windows）。全程只改用户配置目录 `~/.workbuddy-ai`，不碰安装文件，每一步可回滚。
+>
+> **配套开源仓库：<https://github.com/Choysang/workbuddy-to-claude-code>** —— 脚本、图文手册、教程、Claude Code skill 全在里面，issue/PR 都欢迎。
 
-> 开源脚本包：https://github.com/Choysang/workbuddy-to-claude-code （脚本、图文手册、教程、skill 全在仓库里）
+## TL;DR
+
+WorkBuddy 的 Agent 内核与 Claude Code 同构，体验差距全在产品层配置。改造后实测：每次请求 prompt 中位数 **24.8 万 → 5.5 万 token**，用户规则从 0 条变全量注入，压缩阈值从"等于不压"变 800K @ 1M。
+
+上手就一条命令（退出 WorkBuddy 后）：
+
+```bash
+python scripts/harness.py setup
+```
+
+再做 5 个界面动作（MCP 信任、1M、沉淀开关等，见[图文手册](docs/MANUAL-STEPS.md)），发个验收任务就完成了。本文讲清每一步**为什么**这么做、坑在哪。
 
 ## 开篇：为什么这份指南存在
 
@@ -10,9 +22,9 @@ WorkBuddy 的 Agent 内核是 CodeBuddy Code CLI——它与 Claude Code 同构�
 
 但默认体验和 Claude Code 差得很远。问题不在引擎，在产品层配置：系统提示是"办公助手版"、用户规则一条不加载、上下文涨到 50 万 token 才压缩、大量从未被调用过的工具塞满工具清单。
 
-这份指南做的事：**把引擎里本来就有、但被产品配置压住的 Claude Code 式工作方式全部放出来。** 数据支撑来自 431 条真实 trace 的统计分析（约 6,700 次模型调用），每条改动都有可验证的预期效果。
+这份指南做的事：**把引擎里本来就有、但被产品配置压住的 Claude Code 式工作方式全部放出来。** 数据支撑来自 431 条真实 trace 的统计分析（约 6,700 次模型调用，deepseek-v4.1-flash），每条改动都有可验证的预期效果。
 
-全程约定：`~/.workbuddy-ai` 是 WorkBuddy 的配置目录（等价 Claude Code 的 `~/.claude`）。动手前先退出 WorkBuddy——它运行时会把配置写回去，且我们的脚本检测到进程会拒绝执行。
+全程约定：`~/.workbuddy-ai` 是 WorkBuddy 的配置目录（等价 Claude Code 的 `~/.claude`）。动手前先退出 WorkBuddy——它运行时会把配置写回去，且脚本检测到进程会拒绝执行（托盘退出，不是关窗口）。
 
 ## 一、先认清两边的对应关系
 
@@ -36,7 +48,7 @@ WorkBuddy 的 Agent 内核是 CodeBuddy Code CLI——它与 Claude Code 同构�
 3. **上下文几乎从不压缩。** 模型默认 1M 窗口，压缩阈值高到 900K。实测每次请求 prompt 中位数 24.8 万 token，最大 87.4 万——上下文全被废话占了。
 4. **工具清单臃肿 + 模型偏弱。** widget、图片/视频生成、微信企微回复、团队工具等从未被调用过；75% 的调用走免费的 flash 档模型，推理 token 中位只有 154。
 
-对应地，改造分十步，按收益从高到低排。
+对应地，改造分十步，按收益从高到低排。仓库里的 `harness.py setup` 已把 Step 1–3、5–9 全自动化，下文保留原理与坑点供自查和二次开发。
 
 ## 三、改造十步
 
@@ -127,11 +139,11 @@ WorkBuddy 引擎支持与 Claude Code 同名的 hook 事件。三件值得装：
 
 这个开关默认开着，实际做三件事：每轮插一段 `<memory_and_skills_reminder>` 催模型写日志存技能；开放 `SkillManage` 让模型自己建改技能；注入工作区记忆。后果是**技能自动泛滥**——实测 20 个自动沉淀技能里大多是一次性任务（`gis7-cpp-build-test-verify`、`monthly-report-docx-build`……），还有敏感的 `chrome-localstorage-token-extract`（从 Chrome 本地存储提取 token），这种能力不该让模型随手创建。
 
-关法：设置里关开关 + 界面关 `SkillManage` 工具 + 把已长出来的垃圾技能移走（**移动备份而非直接删**，留恢复余地）。留 `skill-library-manager` 这类你自己接的。
+关法：设置里关开关 + 界面关 `SkillManage` 工具 + 把已长出来的垃圾技能移走（**移动备份而非直接删**，留恢复余地）。留 `skill-library-manager` 这类你自己接的。仓库的 `harness.py skills-audit` 可列出可疑技能（只报告不删）。
 
 ## 四、验收：怎么证明改到位了
 
-**第一层：静态检查。** 校验脚本对 `~/.workbuddy-ai/` 全量核对（规则、agents、skills、hooks、settings、mcp.json），全绿才算装好。
+**第一层：静态检查。** `python scripts/harness.py verify` 对 `~/.workbuddy-ai/` 全量核对（规则、agents、skills、hooks、settings、mcp.json），全绿才算装好。
 
 **第二层：运行时验收任务。** WorkBuddy 编码模式，空工作目录，发送：
 
@@ -139,7 +151,7 @@ WorkBuddy 引擎支持与 Claude Code 同名的 hook 事件。三件值得装：
 
 期望行为：先列任务清单 → 写代码 → 每步跑测试并贴结果 → 派 code-reviewer → 汇报改动文件、验证命令与结果。
 
-**第三层：trace 取证。** 跑完看请求 trace 确认五件事：
+**第三层：trace 取证。** 跑完 `python scripts/harness.py verify --runtime`，确认五件事：
 1. 系统提示是精简版（不再有办公助手内容）；
 2. rules/ 规则已注入请求；
 3. 编辑后检查 hook 有运行日志；
@@ -164,29 +176,9 @@ WorkBuddy 自动升级（实测 5.6.2 → 5.7.6）会：
 python scripts/harness.py post-update
 ```
 
-一条命令按序重打全部补丁（系统提示 → 工具清单 → 语气/插件 → MCP/hooks/记忆 → 校验），任何一步失败会点名失败项。等价的分步命令：
+一条命令按序重打全部补丁（系统提示 → 工具清单 → 语气/插件 → MCP/hooks/记忆 → 校验），任何一步失败会点名失败项。等价分步：`patch_code_prompt.py apply` → `patch_tools.py apply` → `tune.py` → `extras.py` → `verify.py`。
 
-```bash
-python scripts/patch_code_prompt.py apply
-```
-
-```bash
-python scripts/patch_tools.py apply
-```
-
-```bash
-python scripts/tune.py
-```
-
-```bash
-python scripts/extras.py
-```
-
-```bash
-python scripts/verify.py
-```
-
-新版本模板可能有变化（5.7.6 多了 `<agent_mail>` 段、删了 `<examples>`），从原始模板重新生成的脚本天然适配；硬编码文本的做法每次升级都得手改。升级后界面开关（MCP 信任、1M、技能沉淀）可能被翻回，按 [手动图文手册](harness-upgrade/docs/MANUAL-STEPS.md) 的复查清单过一遍。
+新版本模板可能有变化（5.7.6 多了 `<agent_mail>` 段、删了 `<examples>`），从原始模板重新生成的脚本天然适配；硬编码文本的做法每次升级都得手改。升级后界面开关（MCP 信任、1M、技能沉淀）可能被翻回，按[图文手册](docs/MANUAL-STEPS.md)的复查清单过一遍。
 
 ## 六、边界：哪些改不了、哪些别碰
 
@@ -200,36 +192,37 @@ python scripts/verify.py
 
 **一个安全提醒。** 全权限 + bypass 模式下，智能体可以经 Bash 里的 Python 直接写文件，绕过 Edit/Write 的规则限制——`~/.claude/CLAUDE.md` 这类每个会话自动注入的"常驻系统提示"被静默改写是真实发生过的风险场景（所幸那次是正常会话所为，但机制上拦不住恶意诱导）。对策：常驻指令文件定期 diff 备份，全局规则变更只经人工确认。
 
-## 七、工具包结构（自建参考）
-
-整个改造做成一个可回滚的脚本包，目录长这样：
+## 七、工具包结构
 
 ```
-harness-upgrade/
-├── README.md            # 用法 + 升级后固定动作
+workbuddy-to-claude-code/
+├── README.md            # 快速开始 + 命令速查
 ├── HARNESS-EVAL.md      # 评估报告（trace 数据与结论）
+├── NOTICE.md            # 开源脱敏记录
 ├── payload/             # 装进 ~/.workbuddy-ai 的内容
 │   ├── rules/  agents/  hooks/  skills/
-│   ├── SOUL.md  USER.md
 ├── docs/
+│   ├── TUTORIAL.md      # 本文
 │   ├── MANUAL-STEPS.md  # 手动步骤图文手册（MCP 信任、1M、沉淀开关…）
 │   └── images/          # 界面示意图
+├── skill/workbuddy-harness/  # Claude Code skill
 ├── scripts/
-│   ├── harness.py               # 统一入口：install / post-update / verify / status / skills-audit / rollback
+│   ├── harness.py               # 统一入口：setup / post-update / verify / status / skills-audit / rollback
 │   ├── install.py / rollback.py      # 安装/回滚（字节级还原）
 │   ├── patch_code_prompt.py          # 系统提示：diff / apply
 │   ├── patch_tools.py                # 工具清单精简
 │   ├── tune.py                       # 语气/插件/模型上限
 │   ├── extras.py                     # MCP / hooks / 记忆 / 推理
 │   └── verify.py [--runtime]         # 静态 300+ 项 + 运行时取证
-├── backups/             # 每次改动前的原文件
-└── tests/               # 安装/回滚/补丁的集成测试
+└── tests/               # 安装/回滚/hook 测试
 ```
 
-一条命令即可跑完全流程：`python scripts/harness.py setup`（首装）/ `post-update`（升级后）。整个流程还封装成了 Claude Code skill（`workbuddy-harness`）：说「WorkBuddy 升级后恢复」就会驱动 post-update → 手动复查 → 验收取证。
+一条龙命令：`python scripts/harness.py setup`（首装）/ `post-update`（升级后）。还封装成了 Claude Code skill（`workbuddy-harness`）：说「WorkBuddy 升级后恢复」就会驱动 post-update → 手动复查 → 验收取证。
 
 核心设计原则三条：**一切可回滚**（改动前备份，回滚字节级还原）、**从原始模板生成而非硬编码**（跨版本存活）、**先退出 WorkBuddy 再改**（进程保护 + 避免被写回）。
 
-## 一句话总结
+## 结语
 
 WorkBuddy 的引擎就是 Claude Code 的同构体，体验差距几乎全部来自产品层配置。十步改造后：prompt 占用从 25 万降到 5.5 万 token，规则/子代理/技能/hooks/MCP 全套对齐 Claude Code 工作流，静态 300+ 项、运行时 306 项验收全绿。改的全是用户配置目录，一步可回滚。剩下的差距（合规注入、沙箱权限模型、工具删不掉）是产品写死的——认清边界，别碰 app.asar。
+
+工具箱在 **<https://github.com/Choysang/workbuddy-to-claude-code>**，一条命令试起。踩到新坑欢迎开 issue，改进欢迎 PR。
