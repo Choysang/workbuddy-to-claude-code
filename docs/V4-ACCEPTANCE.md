@@ -17,6 +17,18 @@
 
 配置与工程副本共同关闭 47 个插件及 23 项内置技能；磁盘缓存和 schema 文字不是实际可用性的证据。启动偏好和产品迁移标记保留，已从初始备份一次性恢复旧安装误删的启动偏好；实测 `autoLaunchDesired=false`、`autoLaunchDefaultApplied=true`。
 
+## 同版本提示词模板体积
+
+2026-10-27 追加测量：原厂 5.8.4 的 ASAR 条目 `resources/plugins/workbuddy-builtin/welcomemode/code/prompt.tpl`，对比当前 `profile/prompt/prompt.tpl`。两者均按 UTF-8 解码并统一 CRLF 为 LF 后统计 Unicode 字符数。
+
+| 指标 | 原厂 5.8.4 | 当前工程版 |
+|---|---|---|
+| 编码系统提示模板字符数 | 27,640 | 11,672 |
+| 减少比例 | — | 57.8% |
+| 原始文件 SHA256 | `4a651328a0172c902febb8619656f84f84eceba23f3fa3f7f3ea3766846cb5f8` | `068044b2a8999387a4b46429d1f09e0e0e9952f3616d7d74ab44f9d43f50ce4a` |
+
+这是同版本模板文件的体积对比，不是完整模型请求的 token 对比。README 中 431 条 trace、24.8 万 → 5.5 万 token 的表格保留自首版 README，属于历史统计，不作为本轮新测结果。
+
 ## 自动检查
 
 | 检查 | 实际结果与范围 |
