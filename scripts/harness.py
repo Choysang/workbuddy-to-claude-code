@@ -20,6 +20,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from common import PROFILE
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -31,14 +32,11 @@ def run(script: str, *args: str) -> int:
 
 
 def chain(steps) -> int:
-    failed = []
     for step in steps:
         rc = run(*step)
         if rc != 0:
-            failed.append(step[0])
-    if failed:
-        print("\nFAILED steps: " + ", ".join(failed))
-        return 1
+            print(f"\nFAILED step: {step[0]}; remaining steps not run")
+            return rc
     return 0
 
 
@@ -56,15 +54,14 @@ def cmd_setup(a: argparse.Namespace) -> int:
             ("install.py",),
             ("patch_code_prompt.py", "apply"),
             ("patch_tools.py", "apply"),
-            ("tune.py",),
-            ("extras.py",),
+            *(([("tune.py",), ("extras.py",)]) if PROFILE == "legacy" else []),
             ("verify.py",),
         ]
     rc = chain(steps)
     if rc == 0 and not a.dry_run:
         print("\nSetup complete. Next (manual, see docs/MANUAL-STEPS.md):")
         print("  1. quit WorkBuddy if it is running, then reopen")
-        print("  2. UI: MCP trust, 1M context, skill-sink off (M2-M5)")
+        print("  2. confirm the selected model and required MCP connections")
         print("  3. run the acceptance task, then: python harness.py verify --runtime")
     return rc
 
@@ -75,10 +72,10 @@ def cmd_post_update(a: argparse.Namespace) -> int:
     then tune (toneStyle / plugins), then extras (MCP/hooks/memory),
     finally verify."""
     rc = chain([
+        ("install.py",),
         ("patch_code_prompt.py", "apply"),
         ("patch_tools.py", "apply"),
-        ("tune.py",),
-        ("extras.py",),
+        *(([("tune.py",), ("extras.py",)]) if PROFILE == "legacy" else []),
         ("verify.py",),
     ])
     if rc != 0:

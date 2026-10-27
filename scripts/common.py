@@ -9,7 +9,10 @@ from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PAYLOAD_DIR = REPO_ROOT / "payload"
+PROFILE = os.environ.get("HARNESS_PROFILE", "engineering")
+if PROFILE not in ("engineering", "legacy"):
+    raise ValueError("HARNESS_PROFILE must be engineering or legacy")
+PAYLOAD_DIR = REPO_ROOT / ("profiles/engineering" if PROFILE == "engineering" else "payload")
 BACKUP_ROOT = Path(os.environ.get("HARNESS_BACKUP_ROOT") or REPO_ROOT / "backups")
 WB_DIR = Path(os.environ.get("WORKBUDDY_CONFIG_DIR") or Path.home() / ".workbuddy-ai")
 SETTINGS_PATH = WB_DIR / "settings.json"

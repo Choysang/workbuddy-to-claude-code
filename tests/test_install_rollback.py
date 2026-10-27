@@ -59,7 +59,7 @@ class InstallRollbackTest(unittest.TestCase):
         if args[0] in ("install.py", "rollback.py"):
             args = (*args, "--force")
         env = dict(os.environ, WORKBUDDY_CONFIG_DIR=str(self.wb), HARNESS_BACKUP_ROOT=str(self.backups),
-                   PYTHONIOENCODING="utf-8")
+                   PYTHONIOENCODING="utf-8", HARNESS_PROFILE="legacy")
         result = subprocess.run([sys.executable, *args], cwd=self.repo / "scripts", env=env, capture_output=True,
                                 timeout=120)
         output = result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace")

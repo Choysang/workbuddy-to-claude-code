@@ -31,6 +31,15 @@ def pending_installs() -> list[Path]:
 
 def reverted_settings(settings: dict, changes: dict) -> dict:
     reverted = dict(settings)
+    for key, change in changes.get("engineering", {}).items():
+        from engineering import ABSENT, restore_value
+        value = restore_value(settings.get(key, ABSENT),
+                              change["old"] if change["had"] else ABSENT,
+                              change["new"] if change["present"] else ABSENT)
+        if value is ABSENT:
+            reverted.pop(key, None)
+        else:
+            reverted[key] = value
     compact = changes.get("autoCompactWindow")
     if compact:
         if compact["had"]:

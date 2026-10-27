@@ -14,7 +14,7 @@ import json
 import shutil
 import sys
 
-from common import (AUTO_COMPACT_WINDOW, PAYLOAD_DIR, SETTINGS_PATH, WB_DIR, has_our_hook, hook_group,
+from common import (AUTO_COMPACT_WINDOW, PAYLOAD_DIR, PROFILE, SETTINGS_PATH, WB_DIR, has_our_hook, hook_group,
                     is_workbuddy_running, new_backup_dir, payload_files, read_settings, sha256, write_settings)
 
 
@@ -32,6 +32,9 @@ def plan_files() -> list[tuple[str, str]]:
 
 
 def plan_settings(settings: dict) -> dict:
+    if PROFILE == "engineering":
+        from engineering import changes
+        return {"engineering": changes(settings)} if changes(settings) else {}
     changes: dict = {}
     if settings.get("autoCompactWindow") != AUTO_COMPACT_WINDOW:
         changes["autoCompactWindow"] = {"had": "autoCompactWindow" in settings, "old": settings.get("autoCompactWindow")}
@@ -41,6 +44,9 @@ def plan_settings(settings: dict) -> dict:
 
 
 def merged_settings(settings: dict, changes: dict) -> dict:
+    if PROFILE == "engineering":
+        from engineering import configured
+        return configured(settings)
     merged = dict(settings)
     if "autoCompactWindow" in changes:
         merged["autoCompactWindow"] = AUTO_COMPACT_WINDOW
@@ -67,7 +73,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="install even if WorkBuddy is running")
     args = parser.parse_args()
 
-    if is_workbuddy_running() and not args.force:
+    if not args.dry_run and is_workbuddy_running() and not args.force:
         print("WorkBuddy is running and rewrites settings.json; quit it first (or pass --force).")
         return 1
 
@@ -76,7 +82,7 @@ def main() -> int:
     changes = plan_settings(settings)
     for rel, action in actions:
         print(f"  {action:9} {rel}")
-    print(f"  settings  {json.dumps(changes, ensure_ascii=False) if changes else 'unchanged'}")
+    print(f"  settings  {', '.join(changes) if changes else 'unchanged'}")
     if args.dry_run:
         return 0
 

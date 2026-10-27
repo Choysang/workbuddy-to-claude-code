@@ -21,7 +21,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from common import (AUTO_COMPACT_WINDOW, BACKUP_ROOT, HOOK_MARKER, HOOK_RUN_LOG, PAYLOAD_DIR, WB_DIR,
+from common import (AUTO_COMPACT_WINDOW, BACKUP_ROOT, HOOK_MARKER, HOOK_RUN_LOG, PAYLOAD_DIR, PROFILE, WB_DIR,
                     code_prompt_path, payload_files, read_settings)
 from patch_code_prompt import MARKER, check_balanced, tag_sequence
 
@@ -78,6 +78,11 @@ def run_hook_via_bash(command: str, file_path: Path) -> subprocess.CompletedProc
 
 def check_settings_and_hook() -> None:
     settings = read_settings()
+    if PROFILE == "engineering":
+        from engineering import changes
+        pending = changes(settings)
+        record(not pending, f"engineering settings differ: {', '.join(pending) or 'none'}")
+        return
     value = settings.get("autoCompactWindow")
     record(value == AUTO_COMPACT_WINDOW, f"settings.autoCompactWindow = {value}")
     command = our_hook_command(settings)
