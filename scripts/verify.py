@@ -127,8 +127,9 @@ def static_checks(cfg: Path) -> list[tuple[str, str, str]]:
     permissions = settings.get("permissions") or {}
     add("permissions.defaultMode", permissions.get("defaultMode") == "acceptEdits",
         str(permissions.get("defaultMode")))
-    add("autoCompactWindow", bool(settings.get("autoCompactWindow")),
-        str(settings.get("autoCompactWindow")))
+    add("autoCompactWindow", "autoCompactWindow" not in settings
+        or C.valid_compact_window(settings["autoCompactWindow"]),
+        str(settings["autoCompactWindow"]) if "autoCompactWindow" in settings else "auto (field absent)")
     snapshot = settings.get("fileCheckpointingEnabled") is True
     memory_on = (settings.get("memory") or {}).get("enabled") is True
     add_volatile("记忆与快照开关", snapshot and memory_on,

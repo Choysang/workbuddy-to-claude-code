@@ -79,7 +79,7 @@ class InstallTest(unittest.TestCase):
             self.assertNotIn(key, settings)
         self.assertEqual(settings["sandbox"]["extraAllowWrite"], [])
         self.assertEqual(settings["permissions"]["defaultMode"], "acceptEdits")
-        self.assertEqual(settings["autoCompactWindow"], "auto")
+        self.assertNotIn("autoCompactWindow", settings)
         self.assertIs(settings["enabledPlugins"]["tmeet@workbuddy-connector-plugins-official"], False)
 
     def test_apply_preserves_user_data(self) -> None:
@@ -88,6 +88,33 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(settings["userOwnedKey"], {"keep": True})
         self.assertEqual(settings["skillOverrides"], {"kb": "on", "daily": "off"})
         self.assertIn("Stop", settings["hooks"], "用户自有 hook 必须保留")
+
+    def test_apply_repairs_persisted_auto_string(self) -> None:
+        settings = self.settings()
+        settings["autoCompactWindow"] = "auto"
+        (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        install.apply(cfg=self.cfg)
+        self.assertNotIn("autoCompactWindow", self.settings())
+        install.apply(cfg=self.cfg)
+        self.assertNotIn("autoCompactWindow", self.settings())
+
+    def test_compact_window_type_validation(self) -> None:
+        for value in ("auto", "900000", None, True, False, 0, -1, 1.5, float("nan"), 2**53):
+            with self.subTest(value=value):
+                self.assertFalse(C.valid_compact_window(value))
+        for value in (1, 200000, 888889, 1000000):
+            self.assertTrue(C.valid_compact_window(value))
+
+    def test_verify_rejects_auto_string_even_after_app_rewrite(self) -> None:
+        install.apply(cfg=self.cfg)
+        settings = self.settings()
+        settings["autoCompactWindow"] = "auto"
+        (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        future = time.time() + 30
+        os.utime(self.cfg / "settings.json", (future, future))
+        self.assertTrue(verify._settings_rewritten(self.cfg))
+        checks = {name: state for name, state, _ in verify.static_checks(self.cfg)}
+        self.assertEqual(checks["autoCompactWindow"], verify.FAIL)
 
     def test_apply_registers_absolute_hooks(self) -> None:
         install.apply(cfg=self.cfg)

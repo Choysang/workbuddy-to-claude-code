@@ -130,7 +130,18 @@ def _merge_settings(current: dict, cfg: Path) -> dict:
     if merged or "hooks" in data:
         data["hooks"] = merged
 
-    for key in ("permissions", "autoCompactWindow", "alwaysThinkingEnabled",
+    # 'auto' is a profile directive. The runtime's /autocompact auto removes
+    # the setting; persisting the string makes Math.min return NaN.
+    if "autoCompactWindow" in profile:
+        window = profile["autoCompactWindow"]
+        if window == "auto":
+            data.pop("autoCompactWindow", None)
+        elif C.valid_compact_window(window):
+            data["autoCompactWindow"] = window
+        else:
+            raise ValueError("autoCompactWindow must be 'auto' or a positive safe integer")
+
+    for key in ("permissions", "alwaysThinkingEnabled",
                 "fileCheckpointingEnabled", "deferToolLoading", "reasoningEffort", "memory"):
         if key in profile:
             data[key] = profile[key]

@@ -14,6 +14,11 @@ REPO = Path(__file__).resolve().parent.parent
 PROFILE = REPO / "profile"
 STATE_DIRNAME = ".harness"
 
+
+def valid_compact_window(value: object) -> bool:
+    """The engine expects a positive JS-safe integer, not an 'auto' string."""
+    return type(value) is int and 0 < value <= 9_007_199_254_740_991
+
 # Keys owned by the product but unrelated to an engineering harness.
 REMOVED_SETTINGS = (
     "claw",

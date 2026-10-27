@@ -26,8 +26,10 @@ python scripts/harness.py rollback   # 回到最近一次备份
 | 斜杠命令 | 5 个：`/plan`、`/review`、`/verify`、`/lanes`、`/commit` |
 | Hook | 3 个：SessionStart 注入 `<repo_state>`；PreToolUse 拦灾难性命令；PostToolUse 语法门禁（py/json/toml/yaml/sh/js） |
 | 权限 | `defaultMode: acceptEdits`，子代理同模式 |
-| 上下文 | `autoCompactWindow: auto`、`alwaysThinkingEnabled`、`reasoningEffort: high`、`fileCheckpointingEnabled`、`deferToolLoading` |
+| 上下文 | profile 中 `autoCompactWindow: auto` 在安装时转换为删除运行配置字段（跟随模型窗口）；保留 `alwaysThinkingEnabled`、`reasoningEffort: high`、`fileCheckpointingEnabled`、`deferToolLoading` |
 | 插件 | 45 个非工程插件置 `false`（office / 设计 / 金融 / 文档 / 连接器 / 支付 / 会议），提示词基础设施 `welcomemode-*` `interactionmode-*` `prompt-common` 保持启用 |
+
+不要在 WorkBuddy 的 `settings.json` 中直接写字符串 `"auto"`：5.8.4 引擎会将它带入数值计算，得到 `NaN`，导致低 token 用量下反复压缩。原生 `/autocompact auto` 的行为是删除字段。安装器按此语义转换，校验器仅接受字段缺省或正的安全整数。
 
 Hook 退出码按 Claude Code 语义：`0` 通过，`2` 阻塞并把 stderr 回传模型，其他非零只提示不阻塞。三个脚本内部异常一律 `exit 0`——门禁失效不该卡住工作。
 
