@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import shutil
+import re
+import shlex
 import time
 from pathlib import Path
 
 import common as C
+import workspace as W
 
 MANAGED = (
     ("agents", "*.md"),
     ("commands", "*.md"),
     ("hooks", "*.py"),
+    ("output-styles", "*.md"),
 )
 
 
@@ -22,12 +26,13 @@ def _harness_hook_paths(cfg: Path) -> tuple[str, ...]:
     that happens to call their own `session_start.py` from being deleted.
     """
     hooks_dir = str(Path(cfg) / "hooks").replace("\\", "/").rstrip("/")
-    return tuple(f"{hooks_dir}/{name}" for name in C.HOOK_SCRIPTS)
+    return tuple(f"{hooks_dir}/{name}" for name in (*C.HOOK_SCRIPTS, *C.OPTIONAL_HOOKS))
 
 
 def _is_harness_hook(command: str, owned: tuple[str, ...]) -> bool:
     normalized = command.replace("\\", "/")
-    return any(path in normalized for path in owned)
+    return any(re.search(re.escape(path) + r'''(?=$|[\s"';&|)])''', normalized, re.IGNORECASE)
+               for path in owned)
 
 
 def _snapshot_ok(value: object) -> bool:
@@ -90,8 +95,8 @@ def _render_hooks(groups: dict, cfg: Path) -> dict:
                 new_entry["matcher"] = entry["matcher"]
             for hook in entry["hooks"]:
                 command = hook["command"]
-                command = command.replace("{python}", C.interpreter())
-                for name in C.HOOK_SCRIPTS:
+                command = command.replace("{python}", shlex.quote(C.interpreter()))
+                for name in (*C.HOOK_SCRIPTS, *C.OPTIONAL_HOOKS):
                     command = command.replace(
                         "{hook:%s}" % name.replace(".py", ""),
                         str(hooks_dir / name).replace("\\", "/"),
@@ -101,7 +106,7 @@ def _render_hooks(groups: dict, cfg: Path) -> dict:
     return rendered
 
 
-def _merge_settings(current: dict, cfg: Path) -> dict:
+def _merge_settings(current: dict, cfg: Path, prompt_context: bool = False) -> dict:
     profile = C.read_json(C.PROFILE / "settings.json") or {}
     plugins = C.read_json(C.PROFILE / "plugins.json") or {}
     data = dict(current)
@@ -119,14 +124,21 @@ def _merge_settings(current: dict, cfg: Path) -> dict:
     existing = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
     merged: dict = {}
     for event, groups in existing.items():
-        kept = [
-            group for group in groups
-            if not any(_is_harness_hook(h.get("command", ""), owned) for h in group.get("hooks", []))
-        ]
+        kept = []
+        for group in groups:
+            hooks = [h for h in group.get("hooks", [])
+                     if not _is_harness_hook(h.get("command", ""), owned)]
+            if hooks:
+                kept.append({**group, "hooks": hooks})
         if kept:
             merged[event] = kept
     for event, groups in _render_hooks(profile.get("hooks", {}), cfg).items():
         merged.setdefault(event, []).extend(groups)
+    if prompt_context:
+        optional = {"UserPromptSubmit": [{"hooks": [{"type": "command", "timeout": 10,
+                    "command": '{python} "{hook:prompt_submit}"'}]}]}
+        for event, groups in _render_hooks(optional, cfg).items():
+            merged.setdefault(event, []).extend(groups)
     if merged or "hooks" in data:
         data["hooks"] = merged
 
@@ -155,6 +167,34 @@ def _merge_settings(current: dict, cfg: Path) -> dict:
         enabled[plugin_id] = True
     if enabled or "enabledPlugins" in data:
         data["enabledPlugins"] = enabled
+
+    overrides = dict(data.get("skillOverrides") or {})
+    for name in C.read_json(C.PROFILE / "builtin-skills-off.json"):
+        overrides[name] = "off"
+    data["skillOverrides"] = overrides
+
+    control = data.get("toolControl", {})
+    if not isinstance(control, dict):
+        raise ValueError("toolControl must be an object")
+    control = dict(control)
+    version = control.get("version", 1)
+    if type(version) is not int or version != 1:
+        raise ValueError("Unsupported toolControl.version; expected integer 1")
+    control.setdefault("version", 1)
+    required_controls = C.read_json(C.PROFILE / "tool-control.json")
+    # Early v4 drafts used builtin IDs for connector MCP tools. Migrate only
+    # those exact entries to their supported IDs; preserve other user choices.
+    legacy = {"builtin:" + value.split(":", 2)[2]
+              for value in required_controls.get("disabledMcpToolIds", [])}
+    if isinstance(control.get("disabledToolIds"), list):
+        control["disabledToolIds"] = [value for value in control["disabledToolIds"]
+                                      if not isinstance(value, str) or value not in legacy]
+    for key, required in required_controls.items():
+        existing_ids = control.get(key, [])
+        if not isinstance(existing_ids, list) or not all(isinstance(v, str) for v in existing_ids):
+            raise ValueError(f"toolControl.{key} must be a string array")
+        control[key] = list(dict.fromkeys([*existing_ids, *required]))
+    data["toolControl"] = control
     return data
 
 
@@ -163,10 +203,48 @@ def prompt_targets(cfg: Path) -> list[Path]:
     return sorted(root.glob("*/prompt.tpl")) if root.is_dir() else []
 
 
-def apply(cfg: Path | None = None, dry_run: bool = False) -> dict:
+def apply(cfg: Path | None = None, dry_run: bool = False,
+          prompt_context: bool | None = None, workspaces: list[Path] | None = None) -> dict:
     cfg = Path(cfg or C.config_dir())
     if not cfg.is_dir():
         raise SystemExit(f"配置目录不存在：{cfg}")
+
+    # Validate before the first write; corrupted settings are not an empty file.
+    settings_path = cfg / "settings.json"
+    current = C.read_json(settings_path, default={}, strict=True)
+    if not isinstance(current, dict):
+        raise ValueError("settings.json must be an object")
+    on_disk_settings = dict(current)
+
+    state_path = C.state_dir(cfg) / "state.json"
+    previous = C.read_json(state_path, default={}) or {}
+    if not previous.get("product_preferences_restored") and previous.get("initial_backup"):
+        original_path = Path(previous["initial_backup"]) / "files/settings.json"
+        original = C.read_json(original_path, default={}, strict=True)
+        if isinstance(original, dict):
+            for key in ("autoLaunchDesired", "autoLaunchDefaultApplied"):
+                if key not in current and key in original:
+                    current[key] = original[key]
+    if prompt_context is None:
+        prompt_context = previous.get("options", {}).get("prompt_context") is True
+    merged = _merge_settings(current, cfg, prompt_context=prompt_context)
+    roots = [Path(value).resolve() for value in previous.get("workspaces", [])]
+    for root in workspaces or []:
+        root = Path(root).resolve()
+        if not root.is_dir():
+            raise ValueError(f"工作区不存在：{root}")
+        if root not in roots:
+            roots.append(root)
+    overlays = []
+    active_roots = []
+    for root in roots:
+        if not root.is_dir():
+            C.warn(f"跳过已不存在的工作区：{root}")
+            continue
+        target = W.settings_path(root)
+        data = C.read_json(target, default={}, strict=True)
+        overlays.append((target, C.json_bytes(W.merged(data))))
+        active_roots.append(root)
 
     actions: list[str] = []
     backup = C.Backup(cfg, "apply")
@@ -198,6 +276,7 @@ def apply(cfg: Path | None = None, dry_run: bool = False) -> dict:
                 if not dry_run:
                     backup.save(target)
                     target.unlink()
+                    backup.note_deleted(target)
 
     # 3. agents / commands / hooks
     for folder, pattern in MANAGED:
@@ -207,10 +286,7 @@ def apply(cfg: Path | None = None, dry_run: bool = False) -> dict:
             write(target_dir / src.name, src.read_bytes(), f"write {folder}/{src.name}")
 
     # 4. settings
-    settings_path = cfg / "settings.json"
-    current = C.read_json(settings_path, default={}) or {}
-    merged = _merge_settings(current, cfg)
-    if merged != current:
+    if merged != on_disk_settings:
         actions.append("update settings.json")
         if not dry_run:
             backup.save(settings_path)
@@ -223,17 +299,21 @@ def apply(cfg: Path | None = None, dry_run: bool = False) -> dict:
     for target in prompt_targets(cfg):
         write(target, prompt, f"prompt {target.relative_to(cfg).as_posix()}")
 
+    for target, data in overlays:
+        write(target, data, f"workspace {target.as_posix()}")
+
     # 6. state
-    state_path = C.state_dir(cfg) / "state.json"
-    previous = C.read_json(state_path, default={}) or {}
     state = {
-        "version": "3.0",
+        "version": "4.0",
+        "product_preferences_restored": True,
         "applied": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "config_dir": str(cfg),
         "profile_sha256": C.sha256(source_prompt),
         "managed": [f"{folder}/{name}" for folder, pattern in MANAGED
                     for name in sorted(p.name for p in (C.PROFILE / folder).glob(pattern))],
         "dry_run": dry_run,
+        "options": {"prompt_context": prompt_context},
+        "workspaces": [str(root) for root in active_roots],
     }
     if not dry_run:
         if actions:

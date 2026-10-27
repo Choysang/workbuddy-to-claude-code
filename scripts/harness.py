@@ -17,7 +17,7 @@ import verify
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
-    result = install.apply(dry_run=args.dry_run)
+    result = install.apply(dry_run=args.dry_run, prompt_context=args.prompt_context, workspaces=args.workspace)
     if not result["actions"]:
         print("已是最新状态，无需改动。")
         return 0
@@ -40,21 +40,7 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"已应用：{state.get('applied', '未安装')}  版本：{state.get('version', '-')}")
     print(f"最近备份：{C.latest_backup(cfg) or '无'}")
 
-    drift = []
-    for folder in ("agents", "commands", "hooks"):
-        for src in sorted((C.PROFILE / folder).glob("*.*")):
-            target = cfg / folder / src.name
-            if not target.is_file():
-                drift.append(f"缺失 {folder}/{src.name}")
-            elif target.read_bytes() != src.read_bytes():
-                drift.append(f"偏离 {folder}/{src.name}")
-    prompt = C.PROFILE / "prompt" / "prompt.tpl"
-    for target in install.prompt_targets(cfg):
-        if target.read_bytes() != prompt.read_bytes():
-            drift.append(f"偏离 {target.relative_to(cfg).as_posix()}")
-    memory = cfg / "CODEBUDDY.md"
-    if not memory.is_file() or memory.read_bytes() != (C.PROFILE / "CODEBUDDY.md").read_bytes():
-        drift.append("偏离 CODEBUDDY.md")
+    drift = install.apply(cfg=cfg, dry_run=True)["actions"]
 
     if drift:
         print(f"\n{len(drift)} 处与 profile 不一致：")
@@ -69,8 +55,21 @@ def cmd_status(_: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     checks = verify.static_checks(C.config_dir())
     if args.runtime:
-        checks += verify.runtime_checks(C.config_dir())
+        checks += verify.runtime_checks(C.config_dir(), pid=args.pid)
     return 0 if verify.report(checks) else 1
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    import engineering
+    result = engineering.build(app_dir=args.app_dir, output=args.output,
+                               shortcuts=not args.no_shortcuts, workspaces=args.workspace)
+    print(f"工程版 {'已存在并通过校验' if result['reused'] else '已生成'}：{result['edition']}")
+    print(f"原厂版本：{result['version']}。原安装未修改；本版本以后直接使用工程版快捷方式。")
+    if args.launch:
+        subprocess.Popen([str(Path(result["edition"]) / engineering.EXE)], cwd=result["edition"])
+    else:
+        print("请退出旧 WorkBuddy 后，从“WorkBuddy AI 工程版”启动。更新原厂版本后重新运行 build。")
+    return 0
 
 
 def cmd_rollback(args: argparse.Namespace) -> int:
@@ -136,12 +135,29 @@ def main(argv: list[str]) -> int:
 
     apply_parser = sub.add_parser("apply", help="安装或同步 profile 到本机配置目录")
     apply_parser.add_argument("--dry-run", action="store_true", help="只显示计划，不写文件")
+    optional = apply_parser.add_mutually_exclusive_group()
+    optional.add_argument("--prompt-context", dest="prompt_context", action="store_true",
+                          help="启用每次提问的时间与工作区提示 hook")
+    optional.add_argument("--no-prompt-context", dest="prompt_context", action="store_false",
+                          help="关闭可选提问 hook，保留三个默认 hooks")
+    apply_parser.set_defaults(prompt_context=None)
+    apply_parser.add_argument("--workspace", type=Path, action="append",
+                              help="为此工作区写入重启后仍有效的插件覆盖；可重复传入")
     apply_parser.set_defaults(func=cmd_apply)
 
     sub.add_parser("status", help="显示 profile 与已安装状态的差异").set_defaults(func=cmd_status)
 
+    build_parser = sub.add_parser("build", help="更新后运行一次：生成持久独立工程版并同步配置")
+    build_parser.add_argument("--app-dir", type=Path, help="原厂 WorkBuddy 安装目录；首次指定后记住")
+    build_parser.add_argument("--output", type=Path, help="独立版本输出目录")
+    build_parser.add_argument("--no-shortcuts", action="store_true", help="不更新工程版快捷方式")
+    build_parser.add_argument("--launch", action="store_true", help="生成后启动；请先退出旧实例")
+    build_parser.add_argument("--workspace", type=Path, action="append", help="同时应用的工作区；可重复")
+    build_parser.set_defaults(func=cmd_build)
+
     verify_parser = sub.add_parser("verify", help="静态校验，--runtime 追加运行时证据")
     verify_parser.add_argument("--runtime", action="store_true", help="检查日志、trace 与 hook 记录")
+    verify_parser.add_argument("--pid", type=int, help="限定某次真实 CLI 进程的日志与 trace（与 --runtime 一起使用）")
     verify_parser.set_defaults(func=cmd_verify)
 
     rollback_parser = sub.add_parser("rollback", help="从备份恢复配置")

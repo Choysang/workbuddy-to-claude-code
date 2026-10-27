@@ -2,8 +2,9 @@
 """PostToolUse hook: syntax gate for edited files.
 
 Reads the hook payload from stdin, checks the edited file with the cheapest
-available parser, and exits 2 with a short message when the file is broken.
-Any internal error exits 0: a broken hook must never block the agent.
+available parser, and returns structured PostToolUse context when it is broken.
+WorkBuddy 5.8.4 logs exit-2 stderr without passing it to the model. Its supported
+additionalContext field reaches the tool result, so syntax feedback uses exit 0.
 """
 
 from __future__ import annotations
@@ -30,9 +31,12 @@ def log(line: str) -> None:
 
 
 def fail(message: str) -> None:
-    sys.stderr.write(message)
-    sys.stderr.flush()
-    raise SystemExit(2)
+    log(f"syntax-error {message}")
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": f"Syntax check failed. Repair this file before continuing:\n{message}",
+    }}, ensure_ascii=False))
+    raise SystemExit(0)
 
 
 def check_python(path: Path) -> None:

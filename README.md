@@ -1,103 +1,135 @@
 # workbuddy-to-claude-code
 
-把 WorkBuddy 的编码体验改造成 Claude Code 的形状——**只写 `~/.workbuddy-ai`，不碰安装文件，每一步字节级可回滚**。
+把本机 WorkBuddy 收敛为编码智能体：精简生态插件、办公技能、推广入口与工具注入，保留文件读写、终端、搜索、代码代理、浏览器测试及项目上下文。
 
-WorkBuddy 的 Agent 内核（CodeBuddy Code CLI 2.161）与 Claude Code 同构：同名工具集（Read/Edit/MultiEdit/Write/Glob/Grep/Bash/PowerShell/Agent/TaskCreate/Skill/ToolSearch/WebFetch/WebSearch）、同款 29 事件 hook 机制、同样的 `CODEBUDDY.md` 常驻规则 + `agents/` 子代理 + `commands/` 斜杠命令 + 自动压缩。默认体验差不是引擎弱，而是产品层把能力压住并灌满了办公/设计/金融内容。这个仓库把那些内容卸掉，把引擎本来的编码面全部打开。
+沿用 v3 的配置 profile；v4 增加兼容能力和独立工程版生成器。本仓库只发布自写配置、补丁逻辑与测试；工程版程序由你本机的原厂安装生成。
 
-## 三条命令
+## 更新后运行一次
 
-```bash
-python scripts/harness.py apply      # 安装 / 同步（幂等，可 --dry-run 预览）
-python scripts/harness.py verify     # 静态校验，--runtime 追加运行时证据
-python scripts/harness.py rollback   # 回到最近一次备份
+Windows，当前实测 WorkBuddy AI **5.8.4**。需要 Python 和 Node.js 在 PATH 中。先退出原厂及工程版 WorkBuddy，再首次指定原厂目录：
+
+```powershell
+python scripts/harness.py build --app-dir "D:/Program Files/WorkBuddyAI"
 ```
 
-`apply` 后重启 WorkBuddy 生效。升级产品后再跑一次 `apply`（新插件缓存目录里的 `prompt.tpl` 会被重新覆盖，停用的插件会被重新置 false）。
+之后更新原厂 WorkBuddy，退出旧实例，再运行：
 
-辅助命令：`status`（逐文件比对 profile 与已安装状态，列出缺失/偏离）、`doctor`（配置目录可写、python/node/git、提示词目标数、hooks 目录）。
+```powershell
+python scripts/harness.py build
+# 或
+.\update-engineering.ps1
+```
 
-## 改造后的形态
+也可双击 `update-engineering.cmd`。首次安装在其他位置时先用上面的 `--app-dir`，脚本会记住路径。
 
-| 维度 | 内容 |
+脚本读取当前原厂版本与内容指纹，生成独立目录，应用补丁、检查 JavaScript 语法、同步配置，最后更新桌面和开始菜单中的 **WorkBuddy AI 工程版** 快捷方式。相同程序、profile 和生成器再次运行会校验并复用产物。本版本以后直接从工程版快捷方式启动，无需每次重打补丁。
+
+工程副本自身的启动静默更新、后台下载和安装入口关闭；原厂安装保持原有更新能力。更新原厂后重新生成下一版。版本目录和原安装独立，旧版本保留供回退。
+
+新版本必须通过源码锚点、完整性和语法检查。若厂商改变内部结构，脚本会指出需要适配的位置，不承诺未知版本自动兼容。不需要下载或提交厂商程序文件。
+
+可选参数：
+
+```powershell
+python scripts/harness.py build --output "D:/WorkBuddy-Engineering/versions"
+python scripts/harness.py build --workspace "D:/path/to/project" --launch
+python scripts/harness.py build --no-shortcuts
+```
+
+`--launch` 前请退出旧 WorkBuddy，避免单实例机制仍展示旧程序。首次运行新程序副本时，系统提示由用户自行处理。
+
+## 工程版修改了什么
+
+| 层面 | 实际改动 |
 |---|---|
-| 常驻记忆 | 单一 `CODEBUDDY.md`，832 字符（原 6504 字符 + `rules/engineering.md` 3037 字节两份重复注入） |
-| 系统提示 | 编码版模板：保留产品必需骨架（模式分支、content_policy、response_language、binary context），删掉办公路由 / 连接器推销 / 技能市场 / 记忆系统长文 |
-| 子代理 | 9 个：architect、code-reviewer、silent-failure-hunter、debugger、verifier、build-error-resolver、lane-worker、worktree-worker、docs-lookup |
-| 斜杠命令 | 5 个：`/plan`、`/review`、`/verify`、`/lanes`、`/commit` |
-| Hook | 3 个：SessionStart 注入 `<repo_state>`；PreToolUse 拦灾难性命令；PostToolUse 语法门禁（py/json/toml/yaml/sh/js） |
-| 权限 | `defaultMode: acceptEdits`，子代理同模式 |
-| 上下文 | profile 中 `autoCompactWindow: auto` 在安装时转换为删除运行配置字段（跟随模型窗口）；保留 `alwaysThinkingEnabled`、`reasoningEffort: high`、`fileCheckpointingEnabled`、`deferToolLoading` |
-| 插件 | 45 个非工程插件置 `false`（office / 设计 / 金融 / 文档 / 连接器 / 支付 / 会议），提示词基础设施 `welcomemode-*` `interactionmode-*` `prompt-common` 保持启用 |
+| 启动 | 保留显式插件禁用和内置技能 off；桌面与 CLI 插件解析均执行 profile 禁用清单，抵御界面/账号状态重新启用 |
+| 账号合并 | 用户明确的 false 优先，避免账号启用项重新打开插件 |
+| 工具 | 编码工具清单；内置 MCP 只暴露文件展示，停止 ToolSearch 纳入整个生态工具集；保留用户自定义 MCP |
+| 技能 | 关闭内置办公、金融、支付、推广、云应用发布与无关多媒体技能；插件技能也遵守 off |
+| 界面 | 默认开发模式；导航保留新任务、项目与历史任务；移除办公模式、生态导航、推广和小程序入口 |
+| 后台 | 停止工程副本的 Claw 频道启动和推送监听；保留现有用户数据 |
+| 提示词 | 工程执行与验证模板，去掉办公路由、市场推荐、连接器推销等长段注入 |
+| 更新 | 副本不自行被原厂安装器覆盖；原厂更新后运行一次生成器 |
 
-不要在 WorkBuddy 的 `settings.json` 中直接写字符串 `"auto"`：5.8.4 引擎会将它带入数值计算，得到 `NaN`，导致低 token 用量下反复压缩。原生 `/autocompact auto` 的行为是删除字段。安装器按此语义转换，校验器仅接受字段缺省或正的安全整数。
+程序修改限于独立副本。生成器重算 ASAR 条目/分块及 EXE 资源中的 ASAR 摘要，保持完整性校验开启。修改后的副本不再是未经修改的原厂签名文件。
 
-Hook 退出码按 Claude Code 语义：`0` 通过，`2` 阻塞并把 stderr 回传模型，其他非零只提示不阻塞。三个脚本内部异常一律 `exit 0`——门禁失效不该卡住工作。
+独立工程版把 `profile/plugins.json` 的禁用项作为该版本的本地策略；界面切换不能解除这些禁用。修改清单后重新生成，用户自定义插件状态保留。
 
-## 设计取舍
+**界面隐藏、磁盘缓存存在、运行时注册、实际派发是不同事实。** 旧插件缓存可能还在磁盘；验收以真实加载及工具调用为准。一次探针通过不代表代码质量已经超过 Claude Code，也不证明所有模型或工作负载的性能。
 
-- **只改配置层，不改二进制**。`app.asar` 有完整性校验与签名，改了就起不来；配置层已经足够放下整套 harness。
-- **规则只留一份**。两处重复注入的规则文件合并成 `CODEBUDDY.md`，冲突时以它为准。
-- **不做过度防护**。`pre_tool_guard` 只拦真正不可逆的命令（`rm -rf /`、`mkfs`、`dd of=/dev/sd*`、fork 炸弹、`format X:`、PowerShell 递归删 `C:\`），工作区内的普通删除、`git push --force` 一律放行——安全边界应该由权限模式和 review 承担，不是靠一堆正则制造摩擦。
-- **失败要吵**。`verify` 实跑三个 hook 验证退出码，不看配置能否解析就算过。
-- **子代理是输入不是证据**。`code-reviewer` / `verifier` 的结论需要自己核，关键路径跑真实验证。
+## 保留的配置方案
+
+仅应用配置时：
+
+```powershell
+python scripts/harness.py apply --workspace "D:/path/to/project"
+python scripts/harness.py status
+python scripts/harness.py verify
+```
+
+`apply` 保留 v3 的配置层路线，并添加指定工作区的 `.codebuddy/settings.local.json`。项目目录是当前打包 CLI 的 `.codebuddy`，用户目录仍为 `.workbuddy-ai`，工作区覆盖不向父目录继承。
+
+原厂 5.8.4 启动会清除全局禁用项，桌面传入的 CLI 设置又高于工作区设置。因此 **工作区覆盖本身不能保证原厂桌面重启后的生态禁用**。配置路线存在此限制，完整精简使用上面的 `build`。真实对照见 [CODING-ONLY-DECISION.md](docs/CODING-ONLY-DECISION.md)。
+
+| 资源 | 内容 |
+|---|---|
+| 常驻规则 | 单一 `CODEBUDDY.md`，尊重既有设计与授权，保存交接及验证结果 |
+| 代码代理 | 原九个角色，加 explorer、test-author，共 11 个；按委派加载 |
+| 命令 | 保留 plan/review/verify/lanes/commit，增加 design/fix/audit/handoff/ship |
+| Hook | 默认 SessionStart、PreToolUse、PostToolUse 三个；UserPromptSubmit 可选且默认关闭 |
+| 输出风格 | engineer、terse 两个可选资源，不强制切换当前风格 |
+| 设置 | acceptEdits、思考、检查点、按需工具加载；保留用户模型与凭据 |
+
+CLI 原生 `/plan` 有优先级；保留原命令文件供兼容，工程规划用 `/design`。
+
+```powershell
+python scripts/harness.py apply --prompt-context       # 开启可选提问 hook
+python scripts/harness.py apply --no-prompt-context    # 关闭；仍为三个默认 hooks
+python scripts/harness.py apply --dry-run              # 预览，不写文件
+```
+
+未传开关会沿用上次选择。用户自己的 hooks、项目设置和工具禁用项合并保留。应用前拒绝损坏 JSON 和不支持的工具控制版本，避免半安装。启动偏好与文件关联修复标记保留，防止重复执行产品默认设置；旧安装误删的启动偏好仅从初始备份补回一次，不覆盖现有选择。
+
+## 两个已修复的运行缺陷
+
+**频繁压缩：** profile 的 `autoCompactWindow: "auto"` 是安装指令，安装器将其转换为删除运行配置字段。原厂引擎把字符串代入数值计算会产生 NaN，在低用量下反复压缩；原生 `/autocompact auto` 本来也删除字段。验证接受缺省或正的 JS 安全整数，非法值始终失败。运行对照见 [COMPACTION-INCIDENT.md](docs/COMPACTION-INCIDENT.md)。
+
+**语法错误没有回到模型：** 5.8.4 的 PostToolUse 只记录 exit-2 的 stderr。现改为它支持的 `hookSpecificOutput.additionalContext`，错误随真实 Write/Edit 结果回传；PreToolUse 的不可逆命令检查仍用 exit 2。正常编辑不增加反馈。实测证明模型收到错误后能够 Edit 修复，再运行断言。
 
 ## 验证
 
-```bash
-python -m unittest discover tests -q     # 28 项
-python scripts/harness.py verify         # 24 项静态检查，含三个 hook 实跑
+```powershell
+python -m unittest discover tests -q
+python scripts/harness.py verify
+python scripts/harness.py verify --runtime --pid <真实CLI进程ID>
 ```
 
-`verify` 覆盖：配置目录、`CODEBUDDY.md` 体量与结构、无重复 rules、agents ≥6 / commands ≥3 且 frontmatter 有 `description`、办公键已移除、权限模式、hooks 三脚本已注册且文件存在、坏 py → exit 2 / 好 py → exit 0 / `rm -rf /` → exit 2 / `ls -la` → exit 0 / SessionStart → exit 0、提示词已替换、办公插件已停用、解释器可用。
+静态校验检查资源、合并设置、hook 真实协议、插件与技能开关。运行时校验读取指定进程的记忆加载日志和 JSON/JSONL trace 的 generation system 输入；用户或工具引用标记不算提示词生效。不传 PID 时选择最近 trace 的进程，结果注明范围。
 
-### 三态结果
-
-`verify` 输出 `PASS / WARN / FAIL`，只有 `FAIL` 影响退出码。
-
-原因：运行中的 WorkBuddy 把 `settings.json` 常驻内存并周期性回写磁盘，用它自己的模型覆盖文件，抹掉它不认识的键（`fileCheckpointingEnabled`、`alwaysThinkingEnabled`、部分 `enabledPlugins`）。实测 `apply` 于 `10:48:15` 写盘正确，`settings.json` 的 mtime 在 63 秒后变成 `10:49:18`——进程几乎实时回写。把这种偏差判成 harness 的缺陷会让人一直追一个不存在的 bug。
-
-所以高波动检查（记忆与快照开关、办公插件已停用）在 `settings.json` 的 mtime 晚于 `state.json` 记录的 `applied` 时间戳时降级为 `WARN`，并附提示：关闭 WorkBuddy 后重跑 `apply` 与 `verify`。若 mtime 没有变晚（说明是 harness 自己写错了），仍然是 `FAIL`。
-
-`verify --runtime` 追加读运行日志：`hooks/harness-hooks.log`、`logs/**/harness__*.log` 里的 `[MemoryLoader] Loaded N memory rules` 与是否含 `CODEBUDDY.md`、最近 6 个 trace 是否含编码版提示词标记。
+PASS/WARN/FAIL 三态中 FAIL 影响退出码。设置漂移的 WARN 只提示差异，不证明某能力已关闭。实际验收须检查重启、工具反馈、子代理派发及技能反向调用。本轮结果见 [V4-ACCEPTANCE.md](docs/V4-ACCEPTANCE.md)；[EXPLORATION-CANDIDATES.md](docs/EXPLORATION-CANDIDATES.md) 保留历史探索与用户决定。
 
 ## 回滚
 
-每次 `apply` 前把将被覆盖或删除的每个文件 `copy2` 进 `~/.workbuddy-ai/.harness/backups/<时间戳>-apply/`，`manifest.json` 记录原路径与「是否原本存在」。`rollback` 按相反方向执行：原本存在的回写字节，原本不存在的 `unlink` 删除（安装新增的文件不会残留）。
+配置备份包含原始字节和安装后摘要；默认从最新快照逐次撤销到初始快照，升级新增文件也会撤销。安装后用户修改的文件保留并报告；若保留 settings.json 或其备份缺失，也保留仍被引用的 hook 依赖。缺失备份返回失败，状态保留供重试。
 
-```bash
-python scripts/harness.py rollback --dry-run          # 看计划
-python scripts/harness.py rollback --backup <目录>     # 指定某次
+```powershell
+python scripts/harness.py rollback --dry-run
+python scripts/harness.py rollback
+python scripts/harness.py rollback --backup <目录>
 ```
+
+回到原厂程序时退出工程版，再从原厂入口启动。工程版生成不覆盖原厂快捷方式；工程版旧快捷方式另有备份。不自动删除历史版本和用户任务。
 
 ## 仓库地图
 
-```
-profile/
-  CODEBUDDY.md           # 唯一常驻规则
-  settings.json          # 权限 / 上下文 / hooks（{python} 与 {hook:name} 占位符在安装时展开为绝对路径）
-  plugins.json           # disable / keep 两份插件清单
-  prompt/prompt.tpl      # 编码版系统提示模板
-  agents/*.md            # 9 个子代理
-  commands/*.md          # 5 个斜杠命令
-  hooks/*.py             # 3 个 hook
-scripts/
-  harness.py             # 入口：apply / status / verify / rollback / doctor
-  install.py             # profile → 配置目录，含 settings 合并与 hook 命令渲染
-  verify.py              # 静态 + 运行时校验
-  rollback.py            # 备份恢复
-  common.py              # 路径、原子写、备份、解释器探测
-tests/                   # hook 行为 + 安装/回滚
-docs/legacy-eval-5.6.2.md # 旧版（v2）实测数据存档
-```
+- `profile/`：规则、11 个代理、10 个命令、默认与可选 hooks、提示词、插件/技能/工具清单。
+- `scripts/engineering.py`：本机程序副本、补丁、ASAR/PE 摘要、版本指纹与快捷方式。
+- `scripts/harness.py`：build / apply / status / verify / rollback / doctor 入口。
+- `scripts/install.py`、`workspace.py`、`rollback.py`：配置合并、工作区覆盖和回滚。
+- `tests/`：行为、协议、回滚、证据范围及程序生成边界。
+- `docs/`：运行证据、设计决定与历史记录。
 
-`settings.json` 里的 `{python}` 在安装时替换为当前解释器绝对路径（正斜杠），`{hook:session_start}` 等替换为 `~/.workbuddy-ai/hooks/*.py`。合并 `settings.json` 时会先剔除自身旧 hook 条目再写入，用户自己的 hook 原样保留。
-
-## 安全边界
-
-- 只写 `~/.workbuddy-ai/`；**不修改 `app.asar`**、不碰签名与完整性校验。
-- 不绕过授权、不破解付费能力；停用插件只写 `enabledPlugins: false`，随时可改回。
-- 不含产品代码与产品提示词原文；模板是从本机插件缓存读出的产品骨架 + 自写编码层。
-- 敏感内容剔除记录见 [NOTICE.md](NOTICE.md)。
+不绕过账号权限或付费能力；不发布程序包、产品密钥或完整运行日志。来源与剔除记录见 [NOTICE.md](NOTICE.md)。
 
 ## License
 

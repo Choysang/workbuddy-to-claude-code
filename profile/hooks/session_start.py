@@ -1,63 +1,80 @@
 #!/usr/bin/env python3
-"""SessionStart hook: inject a compact repository state block.
+"""SessionStart: hand the model a compact picture of the repository it just entered.
 
-Stdout is added to the session context. Keep it small: the goal is orientation
-(branch, dirty files, recent commit), not a report.
+Orientation only — branch, dirty state, last commit, detected stack. The model
+should not have to burn a tool call on `git status` before it knows where it is.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-def git(cwd: str, *args: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, timeout=5
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.decode("utf-8", "replace").strip()
+import _hooklib as H  # noqa: E402
+
+STACK_MARKERS = (
+    ("package.json", "node"),
+    ("pnpm-lock.yaml", "pnpm"),
+    ("yarn.lock", "yarn"),
+    ("pyproject.toml", "python"),
+    ("requirements.txt", "python"),
+    ("go.mod", "go"),
+    ("Cargo.toml", "rust"),
+    ("pom.xml", "java-maven"),
+    ("build.gradle", "java-gradle"),
+    ("CMakeLists.txt", "cmake"),
+)
 
 
-def log(line: str) -> None:
-    try:
-        root = Path(os.environ.get("WORKBUDDY_CONFIG_DIR") or Path.home() / ".workbuddy-ai")
-        path = root / "hooks" / "harness-hooks.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line.replace("\n", " ")[:400] + "\n")
-    except Exception:
-        pass
+def detect_stack(root: Path) -> list[str]:
+    found = [label for name, label in STACK_MARKERS if (root / name).exists()]
+    if (root / "tests").is_dir() or (root / "test").is_dir():
+        found.append("has-tests")
+    if (root / "Dockerfile").exists():
+        found.append("docker")
+    return sorted(set(found))
+
+
+def repo_state(root: Path) -> list[str]:
+    branch = H.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
+    if not branch:
+        return []
+    lines = [f"branch: {branch}"]
+    head = H.run(["git", "log", "-1", "--pretty=%h %s"], root)
+    if head:
+        lines.append(f"head: {head[:120]}")
+    status = H.run(["git", "status", "--porcelain"], root)
+    dirty = [line for line in status.splitlines() if line.strip()]
+    lines.append(f"uncommitted: {len(dirty)} file(s)")
+    if dirty:
+        preview = ", ".join(line[3:].strip() for line in dirty[:5])
+        lines.append(f"touched: {preview}")
+    ahead = H.run(["git", "rev-list", "--count", "@{u}..HEAD"], root)
+    if ahead and ahead != "0":
+        lines.append(f"ahead-of-upstream: {ahead} commit(s)")
+    return lines
 
 
 def main() -> None:
-    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
-    payload = json.loads(raw) if raw.strip() else {}
-    cwd = payload.get("cwd") or os.getcwd()
-    branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
-    if not branch:
-        log("session_start non-git")
+    data = H.payload()
+    root = H.cwd(data)
+    repository = repo_state(root)
+    if not repository:
         return
-    status = git(cwd, "status", "--porcelain")
-    dirty = len([line for line in status.splitlines() if line.strip()])
-    head = git(cwd, "log", "-1", "--pretty=%h %s")
-    upstream = git(cwd, "rev-list", "--count", "@{u}..HEAD")
-    parts = [f"<repo_state>", f"cwd: {cwd}", f"branch: {branch}"]
-    if head:
-        parts.append(f"head: {head[:120]}")
-    parts.append(f"uncommitted: {dirty} file(s)")
-    if upstream:
-        parts.append(f"ahead: {upstream} commit(s)")
+    parts = [f"<repo_state>", f"cwd: {root.as_posix()}"]
+    parts.extend(repository)
+    stack = detect_stack(root)
+    if stack:
+        parts.append("stack: " + ", ".join(stack))
+    handoff = root / ".harness" / "HANDOFF.md"
+    if handoff.is_file():
+        parts.append("handoff: .harness/HANDOFF.md 存在，动手前先读它核对磁盘状态")
     parts.append("</repo_state>")
-    sys.stdout.write("\n".join(parts) + "\n")
-    log(f"session_start {branch} dirty={dirty}")
+    H.emit("\n".join(parts), event="SessionStart")
+    H.log("session_start", f"{root} {len(parts)} lines")
 
 
 if __name__ == "__main__":
@@ -70,6 +87,6 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except Exception as error:
-        log(f"error {type(error).__name__}: {error}")
+    except Exception as error:  # a hook crash must never block the session
+        H.log("session_start", f"error {type(error).__name__}: {error}")
         raise SystemExit(0)

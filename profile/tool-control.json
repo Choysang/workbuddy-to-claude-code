@@ -1,0 +1,32 @@
+{
+  "disabledToolIds": [
+    "builtin:widget_guidelines",
+    "builtin:show_widget",
+    "builtin:ImageGen",
+    "builtin:VideoGen",
+    "builtin:WeChatReply",
+    "builtin:WeComReply",
+    "builtin:DelegateTool"
+  ],
+  "disabledMcpServerIds": ["weixinpay", "miora", "ardot", "netdrive", "sheetagent"],
+  "disabledMcpToolIds": [
+    "mcp:connector-proxy:connect_cloud_service",
+    "mcp:connector-proxy:connect_open_platform",
+    "mcp:connector-proxy:search_and_install_skills",
+    "mcp:connector-proxy:skill_management",
+    "mcp:connector-proxy:workbuddy_sites_deploy",
+    "mcp:connector-proxy:workbuddy_sites_unpublish",
+    "mcp:connector-proxy:workbuddy_cloud_service",
+    "mcp:connector-proxy:search_plugins",
+    "mcp:connector-proxy:suggest_plugin_install",
+    "mcp:connector-proxy:list_installed_plugins",
+    "mcp:connector-proxy:uninstall_plugin",
+    "mcp:connector-proxy:reconnect_plugin",
+    "mcp:connector-proxy:automation_update",
+    "mcp:connector-proxy:domain_search",
+    "mcp:connector-proxy:pick_location",
+    "mcp:connector-proxy:agent_mail_upload_attachment",
+    "mcp:connector-proxy:agent_mail_download_attachment",
+    "mcp:connector-proxy:workbuddy_update_app_preview_entry"
+  ]
+}

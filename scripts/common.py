@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -22,17 +23,18 @@ def valid_compact_window(value: object) -> bool:
 # Keys owned by the product but unrelated to an engineering harness.
 REMOVED_SETTINGS = (
     "claw",
-    "officeFileAssociationsRepairMarker",
-    "officeMarkdownDefaultClaimAttempted",
-    "autoLaunchDesired",
-    "autoLaunchDefaultApplied",
     "pluginConfigs",
 )
+
+# Keep product preferences/migration markers: deleting them repeats default
+# startup or file-association setup. They expose no tools or model context.
 
 # Rule files superseded by CODEBUDDY.md; keeping both duplicates every request.
 REMOVED_RULES = ("engineering.md",)
 
 HOOK_SCRIPTS = ("session_start.py", "pre_tool_guard.py", "post_edit_check.py")
+OPTIONAL_HOOKS = {"prompt_submit.py": "UserPromptSubmit"}
+PROMPT_MARKER = "workbuddy-engineering-v4"
 
 # Single source of truth for hook wiring. verify cross-checks profile/settings.json
 # against these tables, so a matcher can never drift away from the tools the script
@@ -174,6 +176,12 @@ class Backup:
         entry["installed_sha256"] = digest(data)
         self._flush()
 
+    def note_deleted(self, path: Path) -> None:
+        entry = self._index.get(str(Path(path)))
+        if entry is not None:
+            entry["installed_absent"] = True
+            self._flush()
+
     def _flush(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         write_json(self.root / "manifest.json", {
@@ -197,7 +205,10 @@ def list_backups(cfg: Path) -> list[Path]:
     root = state_dir(cfg) / "backups"
     if not root.is_dir():
         return []
-    return sorted(p for p in root.iterdir() if (p / "manifest.json").is_file())
+    def order(path: Path):
+        return tuple((1, int(part)) if part.isdigit() else (0, part)
+                     for part in re.split(r"(\d+)", path.name))
+    return sorted((p for p in root.iterdir() if (p / "manifest.json").is_file()), key=order)
 
 
 def latest_backup(cfg: Path) -> Path | None:
@@ -205,7 +216,9 @@ def latest_backup(cfg: Path) -> Path | None:
     return candidates[-1] if candidates else None
 
 
-def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False) -> dict:
+def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False,
+                   protected: set[str] | None = None,
+                   virtual: dict[str, bytes | None] | None = None) -> dict:
     """Restore a snapshot.
 
     Returns three buckets so the caller can report the truth instead of claiming a
@@ -220,24 +233,43 @@ def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False) -> dict:
     manifest = read_json(Path(backup_root) / "manifest.json", default={}) or {}
     result = {"changed": [], "kept": [], "missing": []}
     for entry in manifest.get("entries", []):
+        if protected and entry["path"] in protected:
+            result["kept"].append(entry["path"])
+            continue
         target = Path(cfg) / entry["path"]
+        current_bytes = (virtual[entry["path"]] if virtual is not None and entry["path"] in virtual
+                         else target.read_bytes() if target.is_file() else None)
         if entry.get("existed"):
             source = Path(backup_root) / "files" / entry.get("store", entry["path"])
             if not source.is_file():
                 result["missing"].append(entry["path"])
                 continue
+            expected = entry.get("installed_sha256")
+            source_bytes = source.read_bytes()
+            if entry.get("installed_absent") and current_bytes is not None and current_bytes != source_bytes:
+                result["kept"].append(entry["path"])
+                continue
+            if expected and current_bytes is not None:
+                current = digest(current_bytes)
+                if current != expected and current != digest(source_bytes):
+                    result["kept"].append(entry["path"])
+                    continue
             if not dry_run:
-                write_bytes(target, source.read_bytes())
+                write_bytes(target, source_bytes)
+            elif virtual is not None:
+                virtual[entry["path"]] = source_bytes
             result["changed"].append(entry["path"])
             continue
-        if not target.exists():
+        if current_bytes is None:
             continue
         expected = entry.get("installed_sha256")
-        if expected and digest(target.read_bytes()) != expected:
+        if expected and digest(current_bytes) != expected:
             result["kept"].append(entry["path"])
             continue
         if not dry_run:
             target.unlink()
+        elif virtual is not None:
+            virtual[entry["path"]] = None
         result["changed"].append(f"-{entry['path']}")
     return result
 

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -20,6 +21,7 @@ import common as C  # noqa: E402
 import install  # noqa: E402
 import rollback as rollback_mod  # noqa: E402
 import verify  # noqa: E402
+import workspace as W  # noqa: E402
 
 ORIGINAL_PROMPT = "ORIGINAL PRODUCT PROMPT\n"
 
@@ -29,7 +31,9 @@ def build_config(root: Path) -> None:
     (root / "settings.json").write_text(json.dumps({
         "claw": {"channels": {"wechatmp": {"enabled": True}}},
         "officeFileAssociationsRepairMarker": "v9:win32",
+        "officeMarkdownDefaultClaimAttempted": True,
         "autoLaunchDesired": False,
+        "autoLaunchDefaultApplied": True,
         "pluginConfigs": {},
         "sandbox": {"extraAllowWrite": ["~/.tmeet"], "orderedRules": {"file": {"rules": []}}},
         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo user-hook"}]}]},
@@ -86,8 +90,221 @@ class InstallTest(unittest.TestCase):
         install.apply(cfg=self.cfg)
         settings = self.settings()
         self.assertEqual(settings["userOwnedKey"], {"keep": True})
-        self.assertEqual(settings["skillOverrides"], {"kb": "on", "daily": "off"})
+        self.assertEqual(settings["skillOverrides"]["kb"], "on")
+        self.assertEqual(settings["skillOverrides"]["daily"], "off")
         self.assertIn("Stop", settings["hooks"], "用户自有 hook 必须保留")
+        self.assertEqual(settings["officeFileAssociationsRepairMarker"], "v9:win32")
+        self.assertIs(settings["officeMarkdownDefaultClaimAttempted"], True)
+        self.assertIs(settings["autoLaunchDesired"], False)
+        self.assertIs(settings["autoLaunchDefaultApplied"], True)
+
+    def test_upgrade_recovers_missing_startup_preference_only_once(self) -> None:
+        install.apply(cfg=self.cfg)
+        settings = self.settings()
+        settings.pop("autoLaunchDesired")
+        C.write_json(self.cfg / "settings.json", settings)
+        state = C.read_json(C.state_dir(self.cfg) / "state.json")
+        state.pop("product_preferences_restored")
+        C.write_json(C.state_dir(self.cfg) / "state.json", state)
+        install.apply(cfg=self.cfg)
+        self.assertIs(self.settings()["autoLaunchDesired"], False)
+        # A later deliberate user deletion is no longer mistaken for v3 damage.
+        settings = self.settings()
+        settings.pop("autoLaunchDesired")
+        C.write_json(self.cfg / "settings.json", settings)
+        install.apply(cfg=self.cfg)
+        self.assertNotIn("autoLaunchDesired", self.settings())
+
+    def test_ecosystem_controls_merge_without_enabling_user_disabled_tools(self) -> None:
+        settings = self.settings()
+        settings["toolControl"] = {"version": 1, "customMcpEnabled": False,
+                                   "disabledToolIds": ["builtin:user-disabled", "builtin:search_plugins"],
+                                   "disabledMcpServerIds": ["user-server"]}
+        C.write_json(self.cfg / "settings.json", settings)
+        install.apply(cfg=self.cfg)
+        settings = self.settings()
+        self.assertFalse(settings["toolControl"]["customMcpEnabled"])
+        self.assertIn("builtin:user-disabled", settings["toolControl"]["disabledToolIds"])
+        self.assertIn("user-server", settings["toolControl"]["disabledMcpServerIds"])
+        self.assertNotIn("builtin:search_plugins", settings["toolControl"]["disabledToolIds"])
+        self.assertIn("mcp:connector-proxy:search_plugins", settings["toolControl"]["disabledMcpToolIds"])
+        for name in C.read_json(C.PROFILE / "builtin-skills-off.json"):
+            self.assertEqual(settings["skillOverrides"][name], "off")
+        self.assertFalse(install.apply(cfg=self.cfg)["actions"])
+
+    def test_invalid_global_settings_fail_before_any_install_writes(self) -> None:
+        for original in (b'{broken', b'[]', b'{"toolControl":{"disabledToolIds":null}}',
+                         b'{"toolControl":{"version":2}}', b'{"toolControl":{"version":true}}',
+                         b'{"toolControl":{"version":null}}', b'{"toolControl":{"version":"1"}}'):
+            with self.subTest(original=original):
+                (self.cfg / "settings.json").write_bytes(original)
+                with self.assertRaises(ValueError):
+                    install.apply(cfg=self.cfg)
+                self.assertEqual((self.cfg / "settings.json").read_bytes(), original)
+                self.assertFalse((self.cfg / "CODEBUDDY.md").exists())
+                self.assertFalse(C.state_dir(self.cfg).exists())
+
+    def test_optional_prompt_hook_is_off_until_enabled_and_choice_survives_apply(self) -> None:
+        install.apply(cfg=self.cfg)
+        self.assertNotIn("UserPromptSubmit", self.settings()["hooks"])
+        self.assertTrue((self.cfg / "commands/plan.md").is_file())
+        self.assertTrue((self.cfg / "commands/design.md").is_file())
+        self.assertTrue((self.cfg / "output-styles/engineer.md").is_file())
+        self.assertNotIn("outputStyle", self.settings())
+        install.apply(cfg=self.cfg, prompt_context=True)
+        enabled = self.settings()["hooks"]["UserPromptSubmit"]
+        self.assertIn("prompt_submit.py", enabled[0]["hooks"][0]["command"])
+        again = install.apply(cfg=self.cfg)
+        self.assertFalse(again["actions"])
+        self.assertEqual(self.settings()["hooks"]["UserPromptSubmit"], enabled)
+        install.apply(cfg=self.cfg, prompt_context=False)
+        self.assertNotIn("UserPromptSubmit", self.settings()["hooks"])
+
+    def test_reapply_preserves_user_hooks_in_mixed_owned_group(self) -> None:
+        install.apply(cfg=self.cfg)
+        settings = self.settings()
+        settings["hooks"]["SessionStart"][0]["hooks"].append({"type": "command", "command": "echo user-owned"})
+        similar = str(self.cfg / "hooks/session_start.py.custom").replace("\\", "/")
+        settings["hooks"]["SessionStart"][0]["hooks"].append({"type": "command", "command": f'python "{similar}"'})
+        (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        install.apply(cfg=self.cfg)
+        commands = [hook["command"] for group in self.settings()["hooks"]["SessionStart"] for hook in group["hooks"]]
+        self.assertIn("echo user-owned", commands)
+        self.assertIn(f'python "{similar}"', commands)
+
+    def test_rollback_unwinds_profile_upgrade_and_preview_matches(self) -> None:
+        source = Path(self.tmp.name) / "source"
+        shutil.copytree(C.PROFILE, source)
+        with patch.object(C, "PROFILE", source):
+            install.apply(cfg=self.cfg)
+            extra = source / "commands/new-after-upgrade.md"
+            extra.write_text("---\ndescription: Upgrade fixture\n---\n", encoding="utf-8")
+            (source / "CODEBUDDY.md").write_text("changed profile\n", encoding="utf-8")
+            install.apply(cfg=self.cfg)
+            before = (self.cfg / "CODEBUDDY.md").read_bytes()
+            preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
+            self.assertEqual((self.cfg / "CODEBUDDY.md").read_bytes(), before)
+            self.assertTrue((self.cfg / "commands/new-after-upgrade.md").exists())
+            actual = rollback_mod.rollback(cfg=self.cfg)
+            for bucket in ("changed", "kept", "missing"):
+                self.assertEqual(preview[bucket], actual[bucket])
+            self.assertFalse((self.cfg / "commands/new-after-upgrade.md").exists())
+            self.assertFalse((self.cfg / "CODEBUDDY.md").exists())
+            self.assertEqual((self.cfg / "settings.json").read_bytes(), self.settings_before)
+
+    def test_workspace_overlay_preserves_local_settings_and_rolls_back(self) -> None:
+        root = Path(self.tmp.name) / "项目 workspace"
+        root.mkdir()
+        local = W.settings_path(root)
+        local.parent.mkdir()
+        original = b'{"userProjectSetting":true,"enabledPlugins":{"local-custom@example":false}}'
+        local.write_bytes(original)
+        install.apply(cfg=self.cfg, workspaces=[root], dry_run=True)
+        self.assertEqual(local.read_bytes(), original)
+        self.assertFalse(C.state_dir(self.cfg).exists())
+        install.apply(cfg=self.cfg, workspaces=[root])
+        configured = json.loads(local.read_bytes())
+        self.assertTrue(configured["userProjectSetting"])
+        self.assertFalse(configured["enabledPlugins"]["local-custom@example"])
+        plugins = C.read_json(C.PROFILE / "plugins.json")
+        for key in plugins["disable"]:
+            self.assertIs(configured["enabledPlugins"][key], False)
+        self.assertFalse(install.apply(cfg=self.cfg)["actions"])
+        before = local.read_bytes()
+        preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
+        self.assertEqual(local.read_bytes(), before)
+        actual = rollback_mod.rollback(cfg=self.cfg)
+        self.assertEqual(preview["changed"], actual["changed"])
+        self.assertEqual(local.read_bytes(), original)
+
+    def test_workspace_overlay_does_not_clobber_invalid_json(self) -> None:
+        root = Path(self.tmp.name) / "workspace"
+        root.mkdir()
+        local = W.settings_path(root)
+        local.parent.mkdir()
+        local.write_bytes(b'{invalid')
+        with self.assertRaises((ValueError, SystemExit)):
+            install.apply(cfg=self.cfg, workspaces=[root])
+        self.assertEqual(local.read_bytes(), b'{invalid')
+        self.assertEqual((self.cfg / "settings.json").read_bytes(), self.settings_before)
+        self.assertFalse((self.cfg / "CODEBUDDY.md").exists())
+
+    def test_verify_reports_malformed_workspace_plugin_map(self) -> None:
+        root = Path(self.tmp.name) / "workspace"
+        root.mkdir()
+        install.apply(cfg=self.cfg, workspaces=[root])
+        W.settings_path(root).write_text('{"enabledPlugins":null}', encoding="utf-8")
+        checks = verify.static_checks(self.cfg)
+        result = [state for name, state, _ in checks if name == "工作区插件覆盖"]
+        self.assertEqual(result, [verify.FAIL])
+        self.assertIn("hook 解释器可用", [name for name, _, _ in checks])
+
+    def test_rollback_preserves_user_edits_to_preexisting_file(self) -> None:
+        existing = self.cfg / "CODEBUDDY.md"
+        existing.write_text("original user instructions\n", encoding="utf-8")
+        install.apply(cfg=self.cfg)
+        existing.write_text("new user instructions\n", encoding="utf-8")
+        result = rollback_mod.rollback(cfg=self.cfg)
+        self.assertIn("CODEBUDDY.md", result["kept"])
+        self.assertEqual(existing.read_text(encoding="utf-8"), "new user instructions\n")
+
+    def test_rollback_keeps_hooks_when_user_edited_settings_are_kept(self) -> None:
+        install.apply(cfg=self.cfg)
+        settings = self.settings()
+        settings["userPreferenceAfterInstall"] = True
+        (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
+        actual = rollback_mod.rollback(cfg=self.cfg)
+        self.assertEqual(preview["kept"], actual["kept"])
+        self.assertIn("settings.json", actual["kept"])
+        self.assertTrue(self.settings()["userPreferenceAfterInstall"])
+        for name in (*C.HOOK_SCRIPTS, "_hooklib.py"):
+            self.assertTrue((self.cfg / "hooks" / name).is_file())
+        probe = self.cfg / "probe.py"
+        probe.write_text("x = 1\n", encoding="utf-8")
+        code, _ = verify._run_hook(self.cfg / "hooks/post_edit_check.py",
+                                   {"tool_name": "Edit", "tool_input": {"file_path": str(probe)}}, self.cfg)
+        self.assertEqual(code, 0)
+
+    def test_rollback_keeps_recreated_rule(self) -> None:
+        install.apply(cfg=self.cfg)
+        rule = self.cfg / "rules/engineering.md"
+        rule.write_text("NEW USER RULE\n", encoding="utf-8")
+        result = rollback_mod.rollback(cfg=self.cfg)
+        self.assertIn("rules/engineering.md", result["kept"])
+        self.assertEqual(rule.read_text(encoding="utf-8"), "NEW USER RULE\n")
+
+    def test_missing_settings_backup_does_not_leave_dangling_hooks(self) -> None:
+        result = install.apply(cfg=self.cfg)
+        saved = Path(result["state"]["backup"]) / "files/settings.json"
+        saved.unlink()
+        preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
+        actual = rollback_mod.rollback(cfg=self.cfg)
+        self.assertEqual(preview["kept"], actual["kept"])
+        self.assertIn("settings.json", actual["missing"])
+        self.assertTrue((C.state_dir(self.cfg) / "state.json").is_file())
+        for name in (*C.HOOK_SCRIPTS, "_hooklib.py"):
+            self.assertTrue((self.cfg / "hooks" / name).is_file())
+
+    def test_same_second_backup_sequence_is_reversed_numerically(self) -> None:
+        target = self.cfg / "sequence.txt"
+        target.write_text("original", encoding="utf-8")
+        with patch.object(C.time, "strftime", return_value="20261027-120000"):
+            snapshots = []
+            for index in range(1, 12):
+                snapshot = C.Backup(self.cfg)
+                snapshot.save(target)
+                data = f"version {index}".encode()
+                target.write_bytes(data)
+                snapshot.note(target, data)
+                snapshots.append(snapshot.finish())
+        C.write_json(C.state_dir(self.cfg) / "state.json", {"initial_backup": str(snapshots[0])})
+        preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
+        self.assertEqual(target.read_text(encoding="utf-8"), "version 11")
+        actual = rollback_mod.rollback(cfg=self.cfg)
+        self.assertEqual(preview["kept"], actual["kept"])
+        self.assertFalse(actual["kept"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
 
     def test_apply_repairs_persisted_auto_string(self) -> None:
         settings = self.settings()
@@ -131,7 +348,7 @@ class InstallTest(unittest.TestCase):
         install.apply(cfg=self.cfg)
         target = install.prompt_targets(self.cfg)[0]
         self.assertEqual(target.read_bytes(), (C.PROFILE / "prompt" / "prompt.tpl").read_bytes())
-        self.assertIn("harness:v3", target.read_text(encoding="utf-8"))
+        self.assertIn(C.PROMPT_MARKER, target.read_text(encoding="utf-8"))
 
     def test_apply_is_idempotent(self) -> None:
         install.apply(cfg=self.cfg)
@@ -269,7 +486,15 @@ class InstallTest(unittest.TestCase):
         names = [name for name, _, _ in checks]
         self.assertEqual(len(names), len(set(names)), "校验项名称必须唯一")
         # Guards against a refactor silently dropping checks (early return, exception).
-        self.assertEqual(len(checks), 25, "校验项数量变了就同步更新这里")
+        self.assertEqual(len(checks), 29, "校验项数量变了就同步更新这里")
+
+    def test_verify_accepts_source_download_without_git_metadata(self) -> None:
+        install.apply(cfg=self.cfg)
+        source = Path(self.tmp.name) / "source-download"
+        source.mkdir()
+        with patch.object(C, "REPO", source):
+            checks = {name: state for name, state, _ in verify.static_checks(self.cfg)}
+        self.assertEqual(checks["hook 会话启动可执行"], verify.PASS)
 
     def test_verify_warns_instead_of_failing_when_app_rewrote_settings(self) -> None:
         """The desktop app flushes settings.json from memory; that must not fail verify."""
