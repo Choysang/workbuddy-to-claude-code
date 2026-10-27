@@ -93,6 +93,13 @@ class PostEditCheckTest(unittest.TestCase):
         self.assert_ok(self.check("run.sh", b"echo hi\necho bye\n"))
 
     @unittest.skipUnless(shutil.which("bash"), "bash not available")
+    def test_shell_check_does_not_execute_commands(self) -> None:
+        marker = self.tmp / "must-not-exist"
+        script = f"touch '{marker.as_posix()}'\nexit 9\n".encode("utf-8")
+        self.assert_ok(self.check("nested 中文/script.sh", script))
+        self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which("bash"), "bash not available")
     def test_shell_syntax_error_reported(self) -> None:
         self.assert_problem(self.check("bad.sh", b"#!/bin/bash\nif true; then\n  echo x\n"), "bash -n")
 

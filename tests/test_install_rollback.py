@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 from patch_code_prompt import MARKER  # noqa: E402
 
-FIXTURE = REPO / "tests" / "fixtures" / "code-prompt-5.6.2.tpl"
+FIXTURE = REPO / "tests" / "fixtures" / "synthetic-prompt.tpl"
 
 
 def digest(path: Path) -> str:
@@ -32,6 +32,9 @@ class InstallRollbackTest(unittest.TestCase):
         self.repo = self.root / "repo"
         for part in ("scripts", "payload"):
             shutil.copytree(REPO / part, self.repo / part, ignore=shutil.ignore_patterns("__pycache__", "*.log"))
+        # Exercise overwrites without shipping any real user's identity files.
+        for name in ("SOUL.md", "USER.md"):
+            (self.repo / "payload" / name).write_text("Synthetic replacement\n", encoding="utf-8")
         self.wb = self.root / "wb"
         self.backups = self.root / "backups"
         self.wb.mkdir()
@@ -40,7 +43,7 @@ class InstallRollbackTest(unittest.TestCase):
         cache = self.root / "cache" / "welcomemode-code" / "v1"
         cache.mkdir(parents=True)
         self.prompt = cache / "prompt.tpl"
-        self.prompt.write_bytes(FIXTURE.read_bytes())
+        self.prompt.write_bytes(FIXTURE.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
         registry = {"version": 2, "plugins": {"welcomemode-code@workbuddy-builtin": [{"installPath": str(cache)}]}}
         (self.wb / "plugins").mkdir()
         (self.wb / "plugins" / "installed_plugins.json").write_text(json.dumps(registry), encoding="utf-8")
@@ -51,6 +54,10 @@ class InstallRollbackTest(unittest.TestCase):
         shutil.rmtree(self.root, ignore_errors=True)
 
     def run_script(self, *args: str, expect: int = 0) -> subprocess.CompletedProcess:
+        # This test owns an isolated config tree; the real desktop may stay open.
+        self.assertEqual(self.wb.parent, self.root)
+        if args[0] in ("install.py", "rollback.py"):
+            args = (*args, "--force")
         env = dict(os.environ, WORKBUDDY_CONFIG_DIR=str(self.wb), HARNESS_BACKUP_ROOT=str(self.backups),
                    PYTHONIOENCODING="utf-8")
         result = subprocess.run([sys.executable, *args], cwd=self.repo / "scripts", env=env, capture_output=True,

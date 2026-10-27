@@ -156,7 +156,9 @@ def check_shell(path: Path, data: bytes) -> list[str]:
     if interpreter is not None and interpreter not in SHELL_INTERPRETERS:
         return []  # zsh/ksh/... scripts: bash -n would report false errors
     bash = shutil.which("bash")
-    result = run_tool([bash, "-n", str(path)]) if bash else None
+    # Feed the bytes already read: Git Bash/WSL need not resolve a Windows path.
+    # -n parses stdin without executing commands in the edited script.
+    result = run_tool([bash, "-n"], stdin=data) if bash else None
     if result and result[0] != 0:
         return ["bash -n 语法检查失败:"] + first_lines(result[1])
     return []
