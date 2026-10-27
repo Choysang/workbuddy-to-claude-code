@@ -4,6 +4,22 @@
 
 沿用 v3 的配置 profile；v4 增加兼容能力和独立工程版生成器。本仓库只发布自写配置、补丁逻辑与测试；工程版程序由你本机的原厂安装生成。
 
+## 2026-10-27 实测更新
+
+程序与配置改动已合入 [1c8b6ef](https://github.com/Choysang/workbuddy-to-claude-code/commit/1c8b6ef395cb15de044f91e3b56f2326dc095941)，重启验收记录已合入 [8f10198](https://github.com/Choysang/workbuddy-to-claude-code/commit/8f101982ddd6d9ff6b766c374ead569d5bf07be9)。以下结果来自 **Windows / WorkBuddy AI 5.8.4** 的本机运行。
+
+| 问题 | 已落地的更新 | 实测结果 |
+|---|---|---|
+| 原厂启动、账号合并重新启用生态插件 | 独立副本在桌面与 CLI 两层执行禁用策略；关闭 47 个插件、23 项内置技能 | 活动插件从 14 个缩到 5 个，技能可见清单从 33 个缩到 8 个；sheet-agent / doc-writer 实际拒绝，library / 发布为应用实际禁用 |
+| ToolSearch 又带回生态工具 | 内置 MCP 只暴露 `present_files`，保留用户自定义 MCP | 新进程日志的声明和匹配均仅为 `present_files`；四个生态目标查询均未返回同名标识符，搜索仍可能模糊回落到其他工具 |
+| 低上下文用量下频繁压缩 | 安装器把 `autoCompactWindow: "auto"` 转为删除运行字段，拒绝非法数值 | 修正后观察 7 分多钟，输入量从 35,241 增长至 166,833 token，64 次预算检查、0 次压缩启动 |
+| Write/Edit 检出的语法错误没回到模型 | PostToolUse 改用宿主实际支持的 `additionalContext` 协议 | 故意漏写冒号 → 真实工具结果反馈错误 → Edit 修复 → 四条行为测试通过 |
+| 编码任务需要分工与复核 | 保留原角色，增加 explorer、test-author 及兼容命令 | explorer 与 test-author 实际并行；verifier 独立核查；code-reviewer 实际返回具体文件行号及边界问题 |
+| 每次启动是否都要重打补丁 | 原厂更新后运行一次生成器，同一版本直接使用工程版快捷方式 | 相同指纹实际校验并复用产物；重启后未再 apply/build，原 sessionId 继续追加，Read 成功返回 `stable_unique` |
+| 修改是否有可复核的验证 | 补齐配置、回滚、hook 协议、程序生成和运行证据校验 | 69 项回归通过；重启前后分别 34/34 检查通过；原厂输入指纹未变，工程副本 7/7 个受跟踪文件摘要匹配 |
+
+资源现为 **11 个代理、10 份命令、3 个默认 hooks**；保留 `/plan`，UserPromptSubmit 可选且默认关闭。实际派发验证覆盖上述四个代理，其余角色和命令尚未逐个端到端运行。完整证据与范围见 [v4 验收记录](docs/V4-ACCEPTANCE.md)、[压缩故障对照](docs/COMPACTION-INCIDENT.md)；尚未做同模型、同预算的 Claude Code 性能比较。
+
 ## 更新后运行一次
 
 Windows，当前实测 WorkBuddy AI **5.8.4**。需要 Python 和 Node.js 在 PATH 中。先退出原厂及工程版 WorkBuddy，再首次指定原厂目录：
