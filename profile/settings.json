@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "subagentPermissionMode": "acceptEdits"
+  },
+  "autoCompactWindow": "auto",
+  "alwaysThinkingEnabled": true,
+  "fileCheckpointingEnabled": true,
+  "deferToolLoading": true,
+  "reasoningEffort": "high",
+  "memory": {
+    "enabled": true,
+    "autoMemoryEnabled": true,
+    "typedMemory": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{python} \"{hook:session_start}\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Shell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{python} \"{hook:pre_tool_guard}\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|ApplyPatch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{python} \"{hook:post_edit_check}\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

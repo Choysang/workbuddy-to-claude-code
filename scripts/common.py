@@ -1,108 +1,259 @@
-"""Shared paths and helpers for the WorkBuddy harness upgrade scripts."""
+"""Shared paths, atomic IO and byte-exact backup for the harness installer."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import subprocess
-from datetime import datetime
+import shutil
+import sys
+import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROFILE = os.environ.get("HARNESS_PROFILE", "engineering")
-if PROFILE not in ("engineering", "legacy"):
-    raise ValueError("HARNESS_PROFILE must be engineering or legacy")
-PAYLOAD_DIR = REPO_ROOT / ("profiles/engineering" if PROFILE == "engineering" else "payload")
-BACKUP_ROOT = Path(os.environ.get("HARNESS_BACKUP_ROOT") or REPO_ROOT / "backups")
-WB_DIR = Path(os.environ.get("WORKBUDDY_CONFIG_DIR") or Path.home() / ".workbuddy-ai")
-SETTINGS_PATH = WB_DIR / "settings.json"
-INSTALLED_PLUGINS_PATH = WB_DIR / "plugins" / "installed_plugins.json"
-PYTHON_VERSIONS_DIR = WB_DIR / "binaries" / "python" / "versions"
-HOOK_SCRIPT = WB_DIR / "hooks" / "post_edit_check.py"
-HOOK_MARKER = "post_edit_check.py"
-HOOK_RUN_LOG = "hooks/post_edit_check.log"
-AUTO_COMPACT_WINDOW = 888_889  # engine compacts at min(window, this) * 0.9 -> ~800K on a 1M window
-CODE_PLUGIN_KEY = "welcomemode-code@workbuddy-builtin"
-WORKBUDDY_PROCESSES = ("WorkBuddyAI.exe", "WorkBuddy.exe")
+REPO = Path(__file__).resolve().parent.parent
+PROFILE = REPO / "profile"
+STATE_DIRNAME = ".harness"
+
+# Keys owned by the product but unrelated to an engineering harness.
+REMOVED_SETTINGS = (
+    "claw",
+    "officeFileAssociationsRepairMarker",
+    "officeMarkdownDefaultClaimAttempted",
+    "autoLaunchDesired",
+    "autoLaunchDefaultApplied",
+    "pluginConfigs",
+)
+
+# Rule files superseded by CODEBUDDY.md; keeping both duplicates every request.
+REMOVED_RULES = ("engineering.md",)
+
+HOOK_SCRIPTS = ("session_start.py", "pre_tool_guard.py", "post_edit_check.py")
+
+# Single source of truth for hook wiring. verify cross-checks profile/settings.json
+# against these tables, so a matcher can never drift away from the tools the script
+# actually handles (the bug that left `Shell` and `NotebookEdit` unwatched).
+HOOK_EVENTS = {
+    "session_start.py": "SessionStart",
+    "pre_tool_guard.py": "PreToolUse",
+    "post_edit_check.py": "PostToolUse",
+}
+HOOK_MATCHERS = {
+    "pre_tool_guard.py": ("Bash", "PowerShell", "Shell"),
+    "post_edit_check.py": ("Edit", "Write", "MultiEdit", "NotebookEdit", "ApplyPatch"),
+}
 
 
-def hook_command() -> str:
-    """Bash command line for the PostToolUse hook (hooks run in Git Bash on Windows).
+def config_dir() -> Path:
+    env = os.environ.get("WORKBUDDY_CONFIG_DIR")
+    return Path(env) if env else Path.home() / ".workbuddy-ai"
 
-    Resolves WorkBuddy's managed Python at run time via versions/current, falls back to python on PATH,
-    and exits 0 when the script or an interpreter is missing: a missing script must never turn into
-    exit code 2, which the engine treats as a blocking error on every edit.
+
+def state_dir(cfg: Path | None = None) -> Path:
+    return (cfg or config_dir()) / STATE_DIRNAME
+
+
+def read_json(path: Path, default=None, strict: bool = False):
+    """Read JSON, tolerating a missing file.
+
+    `strict` makes malformed JSON a hard error instead of a silent default: callers
+    that then rewrite the file (settings.json) must never treat corruption as `{}`.
     """
-    script, versions = HOOK_SCRIPT.as_posix(), PYTHON_VERSIONS_DIR.as_posix()
-    return (f's="{script}"; d="{versions}"; py="$d/$(cat "$d/current" 2>/dev/null)/python.exe"; '
-            f'[ -x "$py" ] || py="$(command -v python || command -v python3)"; '
-            f'[ -f "$s" ] && [ -n "$py" ] || exit 0; "$py" "$s"')
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except (OSError, UnicodeDecodeError) as error:
+        if strict:
+            raise ValueError(f"{path} 无法读取：{error}") from error
+        warn(f"{path} 无法读取：{error}")
+        return default
+    except json.JSONDecodeError as error:
+        if strict:
+            raise ValueError(f"{path} 不是合法 JSON：{error}") from error
+        warn(f"{path} 不是合法 JSON：{error}")
+        return default
 
 
-def hook_group() -> dict:
-    return {
-        "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{"type": "command", "command": hook_command(), "timeout": 30}],
-    }
+def write_bytes(path: Path, data: bytes) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp-harness")
+    temporary.write_bytes(data)
+    os.replace(temporary, path)
 
 
-def payload_files() -> list[Path]:
-    """Payload files as paths relative to PAYLOAD_DIR, sorted for stable output (runtime artifacts excluded)."""
-    return sorted(p.relative_to(PAYLOAD_DIR) for p in PAYLOAD_DIR.rglob("*")
-                  if p.is_file() and p.suffix not in (".log", ".pyc", ".1") and "__pycache__" not in p.parts)
+def json_bytes(payload) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def read_settings() -> dict:
-    return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-
-
-def write_settings(settings: dict) -> None:
-    """Write settings.json in the exact format WorkBuddy uses (2-space indent, UTF-8, trailing newline).
-
-    Writes to a temp file first and replaces atomically, so a crash never leaves a truncated file.
-    """
-    text = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
-    json.loads(text)  # sanity check before touching the real file
-    tmp = SETTINGS_PATH.with_suffix(".json.harness-tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, SETTINGS_PATH)
-
-
-def has_our_hook(settings: dict) -> bool:
-    groups = settings.get("hooks", {}).get("PostToolUse", [])
-    return any(HOOK_MARKER in h.get("command", "") for g in groups for h in g.get("hooks", []))
-
-
-def new_backup_dir(label: str) -> Path:
-    path = BACKUP_ROOT / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{label}"
-    path.mkdir(parents=True, exist_ok=False)
-    return path
+def write_json(path: Path, payload) -> None:
+    write_bytes(path, json_bytes(payload))
 
 
 def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
 
 
-def sha256_bytes(data: bytes) -> str:
+def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def code_prompt_path() -> Path:
-    """prompt.tpl of the code welcome mode, as loaded at runtime (the plugin cache install path)."""
-    registry = json.loads(INSTALLED_PLUGINS_PATH.read_text(encoding="utf-8"))
-    entries = registry.get("plugins", {}).get(CODE_PLUGIN_KEY) or []
-    if not entries:
-        raise SystemExit(f"{CODE_PLUGIN_KEY} not found in {INSTALLED_PLUGINS_PATH}")
-    return Path(entries[0]["installPath"]) / "prompt.tpl"
-
-
-def is_workbuddy_running() -> bool:
-    """True when a WorkBuddy process is running. Fails closed: if the check itself fails, assume running."""
-    if os.name != "nt":
-        return False
+def rel(path: Path, cfg: Path) -> str:
     try:
-        out = subprocess.run(["tasklist", "/NH", "/FO", "CSV"], capture_output=True, text=True,
-                             timeout=30, errors="replace").stdout
-    except (OSError, subprocess.SubprocessError):
-        return True
-    return any(f'"{name}"' in out for name in WORKBUDDY_PROCESSES)
+        return Path(path).resolve().relative_to(cfg.resolve()).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+
+def _store_key(path: Path, cfg: Path) -> str:
+    """Storage path inside the backup, safe even when the target lives outside cfg."""
+    key = rel(path, cfg)
+    if not Path(key).is_absolute():
+        return key
+    tag = hashlib.sha1(str(Path(path)).encode("utf-8")).hexdigest()[:12]
+    return f"_external/{tag}/{Path(path).name}"
+
+
+def _unique_dir(parent: Path, name: str) -> Path:
+    """Two applies inside the same second must not share (and overwrite) a backup."""
+    candidate = parent / name
+    index = 1
+    while candidate.exists():
+        index += 1
+        candidate = parent / f"{name}-{index}"
+    return candidate
+
+
+class Backup:
+    """Snapshot files before the installer touches them.
+
+    Each entry records whether the file existed plus the hash of what the installer
+    wrote, so rollback can tell "harness artefact" from "file the user rewrote later".
+    The manifest is flushed after every entry: a crash halfway leaves a usable backup.
+    """
+
+    def __init__(self, cfg: Path, tag: str = "apply"):
+        self.cfg = Path(cfg)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self.root = _unique_dir(state_dir(cfg) / "backups", f"{stamp}-{tag}")
+        self.entries: list[dict] = []
+        self._index: dict[str, dict] = {}
+
+    def save(self, path: Path) -> dict:
+        path = Path(path)
+        existing = self._index.get(str(path))
+        if existing is not None:
+            return existing
+        entry = {"path": rel(path, self.cfg), "store": _store_key(path, self.cfg),
+                 "existed": path.exists()}
+        if entry["existed"]:
+            target = self.root / "files" / entry["store"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(path, target)
+            except OSError as error:
+                raise OSError(f"备份 {path} 失败：{error}") from error
+        self.entries.append(entry)
+        self._index[str(path)] = entry
+        self._flush()
+        return entry
+
+    def note(self, path: Path, data: bytes) -> None:
+        """Record the content the installer wrote, so rollback can spot later edits."""
+        entry = self._index.get(str(Path(path)))
+        if entry is None:
+            return
+        entry["installed_sha256"] = digest(data)
+        self._flush()
+
+    def _flush(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_json(self.root / "manifest.json", {
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "config_dir": str(self.cfg),
+            "entries": self.entries,
+        })
+
+    def finish(self) -> Path:
+        self._flush()
+        return self.root
+
+
+def list_backups(cfg: Path) -> list[Path]:
+    """Every snapshot that still has a manifest, oldest first.
+
+    Directory names start with a `%Y%m%d-%H%M%S` stamp, so lexicographic order is
+    chronological order. A snapshot whose manifest is gone is skipped: it cannot be
+    restored and must never be offered as a rollback anchor.
+    """
+    root = state_dir(cfg) / "backups"
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.iterdir() if (p / "manifest.json").is_file())
+
+
+def latest_backup(cfg: Path) -> Path | None:
+    candidates = list_backups(cfg)
+    return candidates[-1] if candidates else None
+
+
+def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False) -> dict:
+    """Restore a snapshot.
+
+    Returns three buckets so the caller can report the truth instead of claiming a
+    clean rollback:
+      changed  - paths written back or deleted
+      kept     - files the user rewrote after install (never silently destroyed)
+      missing  - entries whose backup copy is gone; the target was left untouched
+
+    `dry_run` runs the exact same decisions without touching disk, so the preview
+    can never disagree with the real run.
+    """
+    manifest = read_json(Path(backup_root) / "manifest.json", default={}) or {}
+    result = {"changed": [], "kept": [], "missing": []}
+    for entry in manifest.get("entries", []):
+        target = Path(cfg) / entry["path"]
+        if entry.get("existed"):
+            source = Path(backup_root) / "files" / entry.get("store", entry["path"])
+            if not source.is_file():
+                result["missing"].append(entry["path"])
+                continue
+            if not dry_run:
+                write_bytes(target, source.read_bytes())
+            result["changed"].append(entry["path"])
+            continue
+        if not target.exists():
+            continue
+        expected = entry.get("installed_sha256")
+        if expected and digest(target.read_bytes()) != expected:
+            result["kept"].append(entry["path"])
+            continue
+        if not dry_run:
+            target.unlink()
+        result["changed"].append(f"-{entry['path']}")
+    return result
+
+
+def interpreter() -> str:
+    """Absolute interpreter path when available, so hooks survive a bare PATH."""
+    candidate = Path(sys.executable)
+    return str(candidate).replace("\\", "/") if candidate.is_file() else "python"
+
+
+def interpreter_available() -> bool:
+    return bool(shutil.which(interpreter()))
+
+
+def info(message: str) -> None:
+    print(message, flush=True)
+
+
+def warn(message: str) -> None:
+    print(f"WARN {message}", flush=True)
+
+
+def fail(message: str) -> None:
+    print(f"FAIL {message}", flush=True)

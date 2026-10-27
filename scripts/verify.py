@@ -1,201 +1,275 @@
-"""Verify the harness upgrade.
+"""Static and runtime verification for the installed harness."""
 
-Usage:
-  python scripts/verify.py              # static checks: files, settings, hook smoke test, prompt patch
-  python scripts/verify.py --runtime    # also check hook run log and traces written after the install
-
-Exit code 0 when every check passes, 1 otherwise.
-"""
 from __future__ import annotations
 
-import argparse
-import glob
 import json
 import os
 import re
-import shutil
-import statistics
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+import time
 from pathlib import Path
 
-from common import (AUTO_COMPACT_WINDOW, BACKUP_ROOT, HOOK_MARKER, HOOK_RUN_LOG, PAYLOAD_DIR, PROFILE, WB_DIR,
-                    code_prompt_path, payload_files, read_settings)
-from patch_code_prompt import MARKER, check_balanced, tag_sequence
+import common as C
+import install
 
-MIN_CALLS_FOR_CONTEXT_CHECK = 10
-results: list[tuple[bool, str]] = []
+MARKER = "你不是办公文档助手"
+HOOK_SCRIPTS = ("session_start.py", "pre_tool_guard.py", "post_edit_check.py")
 
+PASS, WARN, FAIL = "pass", "warn", "fail"
+LABELS = {PASS: "PASS", WARN: "WARN", FAIL: "FAIL"}
 
-def record(ok: bool, message: str) -> None:
-    results.append((ok, message))
-    print(f"  [{'PASS' if ok else 'FAIL'}] {message}")
-
-
-def check_files() -> None:
-    for rel in payload_files():
-        target = WB_DIR / rel
-        same = target.is_file() and target.read_bytes() == (PAYLOAD_DIR / rel).read_bytes()
-        record(same, f"installed {rel.as_posix()}" if same else f"missing or different: {target}")
+# The desktop app keeps settings.json in memory and periodically flushes it back
+# to disk, which reverts keys it does not model (fileCheckpointingEnabled,
+# alwaysThinkingEnabled, per-plugin enable flags). A check that fails only
+# because of that flush is a warning, not a defect in the harness.
+STALE_HINT = "运行中的 WorkBuddy 回写了 settings.json；关闭 WorkBuddy 后重跑 apply 与 verify"
 
 
-def front_matter(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-    parts = text.split("---", 2)
-    return parts[1] if text.startswith("---") and len(parts) == 3 else ""
+def _state(value: bool | str) -> str:
+    if isinstance(value, str):
+        return value if value in LABELS else (PASS if value else FAIL)
+    return PASS if value else FAIL
 
 
-def check_front_matter() -> None:
-    for path in sorted((WB_DIR / "agents").glob("*.md")) + sorted((WB_DIR / "skills").glob("*/SKILL.md")):
-        meta = front_matter(path)
-        ok = re.search(r"^name:\s*\S", meta, re.M) and re.search(r"^description:\s*\S", meta, re.M)
-        record(bool(ok), f"front matter name/description: {path.relative_to(WB_DIR).as_posix()}")
-    for path in sorted((WB_DIR / "rules").glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        ok = not text.startswith("---") or bool(front_matter(path))
-        scope = "path-scoped" if "paths:" in front_matter(path) else "always-on"
-        record(ok, f"rule parses ({scope}): {path.relative_to(WB_DIR).as_posix()}")
-
-
-def our_hook_command(settings: dict) -> str | None:
-    for group in settings.get("hooks", {}).get("PostToolUse", []):
-        for hook in group.get("hooks", []):
-            if HOOK_MARKER in hook.get("command", ""):
-                return hook["command"]
-    return None
-
-
-def run_hook_via_bash(command: str, file_path: Path) -> subprocess.CompletedProcess:
-    """Run the registered hook command the way the engine does; its run log goes next to the probe file."""
-    payload = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Edit",
-                          "tool_input": {"file_path": str(file_path)}}, ensure_ascii=False)
-    env = dict(os.environ, WB_HOOK_LOG=str(file_path.with_suffix(".log")))
-    return subprocess.run([shutil.which("bash") or "bash", "-c", command], input=payload.encode("utf-8"),
-                          capture_output=True, timeout=60, env=env)
-
-
-def check_settings_and_hook() -> None:
-    settings = read_settings()
-    if PROFILE == "engineering":
-        from engineering import changes
-        pending = changes(settings)
-        record(not pending, f"engineering settings differ: {', '.join(pending) or 'none'}")
-        return
-    value = settings.get("autoCompactWindow")
-    record(value == AUTO_COMPACT_WINDOW, f"settings.autoCompactWindow = {value}")
-    command = our_hook_command(settings)
-    record(command is not None, "settings.hooks.PostToolUse contains post_edit_check")
-    if command is None:
-        return
-    with tempfile.TemporaryDirectory(prefix="wb-hook-") as tmp:
-        bad, good = Path(tmp) / "bad.py", Path(tmp) / "good.py"
-        bad.write_text("def f(:\n", encoding="utf-8")
-        good.write_text("x = 1\n", encoding="utf-8")
-        bad_run, good_run = run_hook_via_bash(command, bad), run_hook_via_bash(command, good)
-    stderr = bad_run.stderr.decode("utf-8", "replace")
-    record(bad_run.returncode == 2 and "Python" in stderr, f"hook via bash flags a syntax error (exit {bad_run.returncode})")
-    record(good_run.returncode == 0, f"hook via bash passes a clean file (exit {good_run.returncode})")
-
-
-def check_prompt_patch() -> None:
-    path = code_prompt_path()
-    text = path.read_text(encoding="utf-8")
-    record(MARKER in text, f"code-mode prompt is lean v2: {path.parent.name}")
+def _settings_rewritten(cfg: Path) -> bool:
+    """True when settings.json was touched after the last apply recorded its stamp."""
+    state = C.read_json(C.state_dir(cfg) / "state.json", default={}) or {}
+    applied = state.get("applied")
+    target = cfg / "settings.json"
+    if not applied or not target.is_file():
+        return False
     try:
-        check_balanced(tag_sequence(text))
-        record(True, "code-mode prompt template tags balanced")
-    except ValueError as exc:
-        record(False, f"code-mode prompt template tags: {exc}")
+        stamp = time.mktime(time.strptime(str(applied), "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, OverflowError):
+        return False
+    return target.stat().st_mtime > stamp + 1
 
 
-def install_time() -> datetime:
-    installs = sorted(BACKUP_ROOT.glob("*-install"))
-    if not installs:
-        raise SystemExit("No install found; run scripts/install.py first.")
-    return datetime.strptime(installs[-1].name[:15], "%Y%m%d-%H%M%S")
+def _frontmatter(path: Path) -> dict:
+    """Parse the leading `---` block.
+
+    The closing fence is optional: a hand-written agent file that forgets it used
+    to raise IndexError and take the whole report down.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.match(r"^---[ \t]*\r?\n(.*?)(?:\r?\n---[ \t]*(?:\r?\n|\Z)|\Z)", text, re.S)
+    if not match:
+        return {}
+    fields = {}
+    for line in match.group(1).splitlines():
+        if ":" in line and not line.startswith((" ", "\t")):
+            key, value = line.split(":", 1)
+            fields[key.strip()] = value.strip()
+    return fields
 
 
-def hook_runs_since(since: datetime) -> list[list[str]]:
-    """Entries of the hook's own run log (ISO time, result, elapsed, path) written after `since`."""
-    runs = []
-    for log in (WB_DIR / HOOK_RUN_LOG, WB_DIR / (HOOK_RUN_LOG + ".1")):
-        if log.is_file():
-            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-                fields = line.split("\t")
-                if len(fields) == 4 and datetime.fromisoformat(fields[0]) >= since:
-                    runs.append(fields)
-    return runs
+def _run_hook(script: Path, payload: dict, cfg: Path) -> tuple[int, str]:
+    env = {**os.environ, "WORKBUDDY_CONFIG_DIR": str(cfg)}
+    try:
+        result = subprocess.run(
+            [C.interpreter(), str(script)],
+            input=json.dumps(payload).encode("utf-8"),
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "hook 超时（60s）"
+    except OSError as error:
+        return 125, f"无法启动解释器：{error}"
+    return result.returncode, (result.stderr or b"").decode("utf-8", "replace")
 
 
-def memory_loader_lines(since: datetime) -> list[str]:
-    """[MemoryLoader] lines from WorkBuddy's text logs. Informational: WorkBuddy prunes these logs."""
-    patterns = ("*.log", "20*/*.log", "20*/sdk/conversations/*.log*")
-    files = {f for p in patterns for f in glob.glob(str(WB_DIR / "logs" / p))}
-    lines = []
-    for log in files:
-        if datetime.fromtimestamp(Path(log).stat().st_mtime) < since:
-            continue
-        with open(log, encoding="utf-8", errors="replace") as handle:
-            lines += [line.strip() for line in handle if "MemoryLoader" in line and "memory rules" in line]
-    return lines
+def static_checks(cfg: Path) -> list[tuple[str, str, str]]:
+    checks: list[tuple[str, str, str]] = []
+
+    def add(name: str, state: bool | str, detail: str = "") -> None:
+        checks.append((name, _state(state), detail))
+
+    add("配置目录", cfg.is_dir(), str(cfg))
+    if not cfg.is_dir():
+        return checks
+
+    rewritten = _settings_rewritten(cfg)
+
+    def add_volatile(name: str, ok: bool, detail: str = "") -> None:
+        """Fail only when the harness is really wrong, warn when the app reverted it."""
+        if ok:
+            add(name, PASS, detail)
+        elif rewritten:
+            add(name, WARN, f"{detail}；{STALE_HINT}" if detail else STALE_HINT)
+        else:
+            add(name, FAIL, detail)
+
+    memory = cfg / "CODEBUDDY.md"
+    text = memory.read_text(encoding="utf-8", errors="replace") if memory.is_file() else ""
+    add("常驻记忆 CODEBUDDY.md", bool(text) and len(text) <= 6000,
+        f"{len(text)} 字符" if text else "缺失")
+    add("记忆内容完整", "## 委派" in text and "## 验证" in text, "")
+
+    rules = cfg / "rules"
+    leftovers = [p.name for p in rules.glob("*.md")] if rules.is_dir() else []
+    add("无重复常驻规则", not leftovers, ",".join(leftovers))
+
+    for folder, minimum in (("agents", 6), ("commands", 3)):
+        files = sorted((cfg / folder).glob("*.md")) if (cfg / folder).is_dir() else []
+        names = [p.stem for p in files]
+        missing = [p.name for p in files if not _frontmatter(p).get("description")]
+        add(f"{folder} 数量", len(files) >= minimum, f"{len(files)} 个：{','.join(names)}")
+        add(f"{folder} frontmatter", not missing, ",".join(missing))
+
+    settings = C.read_json(cfg / "settings.json", default={}) or {}
+    absent = [key for key in C.REMOVED_SETTINGS if key in settings]
+    add("办公类配置键已移除", not absent, ",".join(absent))
+
+    permissions = settings.get("permissions") or {}
+    add("permissions.defaultMode", permissions.get("defaultMode") == "acceptEdits",
+        str(permissions.get("defaultMode")))
+    add("autoCompactWindow", bool(settings.get("autoCompactWindow")),
+        str(settings.get("autoCompactWindow")))
+    snapshot = settings.get("fileCheckpointingEnabled") is True
+    memory_on = (settings.get("memory") or {}).get("enabled") is True
+    add_volatile("记忆与快照开关", snapshot and memory_on,
+                 "" if snapshot and memory_on
+                 else f"fileCheckpointingEnabled={settings.get('fileCheckpointingEnabled')} "
+                      f"memory.enabled={(settings.get('memory') or {}).get('enabled')}")
+
+    # Registering the right script under the wrong event is silently useless, so
+    # check the pairing (event + matcher) rather than just "the filename appears".
+    hooks = settings.get("hooks") or {}
+    problems: list[str] = []
+    seen: list[str] = []
+    for script in HOOK_SCRIPTS:
+        event = C.HOOK_EVENTS[script]
+        expected = set(C.HOOK_MATCHERS.get(script, ()))
+        found = False
+        for group in hooks.get(event) or []:
+            matcher = group.get("matcher") or ""
+            patterns = {part.strip() for part in matcher.split("|") if part.strip()}
+            for hook in group.get("hooks", []):
+                if script not in (hook.get("command") or ""):
+                    continue
+                found = True
+                # An empty matcher matches every tool, which covers the expectation.
+                gap = expected - patterns if patterns else set()
+                if gap:
+                    problems.append(f"{script} matcher 缺 {','.join(sorted(gap))}")
+        if found:
+            seen.append(f"{event}:{script}")
+        else:
+            problems.append(f"{script} 未注册到 {event}")
+    add("hooks 已注册", not problems, "; ".join(problems) or ",".join(seen))
+
+    hooks_dir = cfg / "hooks"
+    for script in HOOK_SCRIPTS:
+        path = hooks_dir / script
+        add(f"hook 文件 {script}", path.is_file(), "")
+
+    if (hooks_dir / "post_edit_check.py").is_file():
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "broken.py"
+            broken.write_text("def f(:\n    pass\n", encoding="utf-8")
+            code, message = _run_hook(hooks_dir / "post_edit_check.py",
+                                      {"tool_name": "Edit", "tool_input": {"file_path": str(broken)}}, cfg)
+            add("hook 语法门禁拦截坏文件", code == 2, f"exit={code} {message.strip()[:80]}")
+            good = Path(tmp) / "good.py"
+            good.write_text("x = 1\n", encoding="utf-8")
+            code, _ = _run_hook(hooks_dir / "post_edit_check.py",
+                                {"tool_name": "Edit", "tool_input": {"file_path": str(good)}}, cfg)
+            add("hook 语法门禁放行好文件", code == 0, f"exit={code}")
+
+    if (hooks_dir / "pre_tool_guard.py").is_file():
+        code, message = _run_hook(hooks_dir / "pre_tool_guard.py",
+                                  {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}, cfg)
+        add("hook 危险命令拦截", code == 2, f"exit={code} {message.strip()[:60]}")
+        code, _ = _run_hook(hooks_dir / "pre_tool_guard.py",
+                            {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}, cfg)
+        add("hook 普通命令放行", code == 0, f"exit={code}")
+
+    if (hooks_dir / "session_start.py").is_file():
+        code, _ = _run_hook(hooks_dir / "session_start.py", {"cwd": str(C.REPO)}, cfg)
+        add("hook 会话启动可执行", code == 0, f"exit={code}")
+
+    prompt = C.PROFILE / "prompt" / "prompt.tpl"
+    targets = install.prompt_targets(cfg)
+    same = bool(targets) and all(t.read_bytes() == prompt.read_bytes() for t in targets)
+    add("系统提示已替换", same, f"{len(targets)} 个目标")
+
+    plugins = C.read_json(C.PROFILE / "plugins.json", default={}) or {}
+    enabled = settings.get("enabledPlugins") or {}
+    wrong = [pid for pid in plugins.get("disable", []) if enabled.get(pid) is not False]
+    add_volatile("办公插件已停用", not wrong, f"{len(wrong)} 个未停用：{','.join(wrong)}" if wrong else "")
+    # The keep list is the other half: an office-profile install that turns the
+    # engineering plugins off is just as broken as one that leaves office on.
+    kept = [pid for pid in plugins.get("keep", []) if enabled.get(pid) is not True]
+    add_volatile("工程插件已启用", not kept, f"{len(kept)} 个未启用：{','.join(kept)}" if kept else "")
+
+    add("hook 解释器可用", C.interpreter_available(), C.interpreter())
+    return checks
 
 
-def check_runtime(since: datetime) -> None:
-    print(f"  runtime evidence since {since:%Y-%m-%d %H:%M:%S}")
-    runs = hook_runs_since(since)
-    results_count = {kind: sum(1 for r in runs if r[1] == kind) for kind in ("ok", "problem", "skip", "error")}
-    record(bool(runs), f"hook ran in WorkBuddy sessions: {len(runs)} runs {results_count}")
-    loader = memory_loader_lines(since)
-    if loader:
-        print(f"  info: {len(loader)} MemoryLoader log lines; mentions CODEBUDDY.md: "
-              f"{any('CODEBUDDY.md' in l for l in loader)}; 'No memory rules loaded': "
-              f"{sum('No memory rules loaded' in l for l in loader)}")
+def _tail(path: Path, size: int = 400_000) -> str:
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        length = handle.tell()
+        handle.seek(max(0, length - size))
+        return handle.read().decode("utf-8", "replace")
+
+
+def runtime_checks(cfg: Path) -> list[tuple[str, str, str]]:
+    checks: list[tuple[str, str, str]] = []
+
+    def add(name: str, state: bool | str, detail: str = "") -> None:
+        checks.append((name, _state(state), detail))
+
+    hook_log = cfg / "hooks" / "harness-hooks.log"
+    entries = hook_log.read_text(encoding="utf-8", errors="replace").splitlines() if hook_log.is_file() else []
+    add("hook 运行日志", bool(entries), f"{len(entries)} 行，最后：{entries[-1][:80] if entries else ''}")
+
+    logs = sorted(cfg.glob("logs/**/harness__*.log"), key=lambda p: p.stat().st_mtime)
+    if logs:
+        tail = _tail(logs[-1])
+        loaded = re.findall(r"\[MemoryLoader\] Loaded (\d+) memory rules", tail)
+        add("运行时加载记忆规则", bool(loaded), f"最近一次 Loaded {loaded[-1] if loaded else '?'} 条")
+        add("记忆包含 CODEBUDDY.md", "CODEBUDDY.md" in tail, logs[-1].name)
     else:
-        print("  info: no MemoryLoader log lines (WorkBuddy prunes its text logs); relying on traces")
+        add("运行时日志", False, "未找到 harness__*.log")
 
-    prompts, engineering, protocol = [], 0, 0
-    for trace in glob.glob(str(WB_DIR / "traces" / "*" / "trace_*.json")):
-        if datetime.fromtimestamp(Path(trace).stat().st_mtime) < since:
+    traces = sorted(cfg.glob("traces/*/trace_*.json"), key=lambda p: p.stat().st_mtime)
+    hit = ""
+    for trace in reversed(traces[-6:]):
+        try:
+            if MARKER in _tail(trace, 2_000_000):
+                hit = trace.name
+                break
+        except OSError:
             continue
-        spans = json.loads(Path(trace).read_text(encoding="utf-8")).get("spans", [])
-        for span in spans:
-            if span.get("type") != "generation":
-                continue
-            prompt_in, output = span.get("toolInput") or "", span.get("toolOutput") or ""
-            engineering += "<engineering>" in prompt_in
-            protocol += "workbuddy-protocol.md" in prompt_in
-            match = re.search(r'"prompt_tokens":(\d+)', output)
-            if match:
-                prompts.append(int(match.group(1)))
-    record(engineering > 0, f"system prompt is the lean coding prompt ({engineering} calls)")
-    record(protocol > 0, f"requests carry rules/workbuddy-protocol.md ({protocol} calls)")
-    if len(prompts) >= MIN_CALLS_FOR_CONTEXT_CHECK:
-        prompts.sort()
-        p90 = prompts[int(len(prompts) * 0.9)]
-        record(p90 <= AUTO_COMPACT_WINDOW, f"context stays bounded: {len(prompts)} calls, prompt tokens "
-                                           f"p50={int(statistics.median(prompts))} p90={p90} max={prompts[-1]}")
-    elif prompts:
-        print(f"  info: only {len(prompts)} model calls so far; prompt tokens max={max(prompts)}")
+    add("系统提示已生效（trace 含标记）", bool(hit), hit or "最近 trace 未见标记")
+    return checks
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runtime", action="store_true", help="also check logs/traces after install")
-    args = parser.parse_args()
-    print("static checks")
-    check_files()
-    check_front_matter()
-    check_settings_and_hook()
-    check_prompt_patch()
-    if args.runtime:
-        print("runtime checks")
-        check_runtime(install_time())
-    failed = [m for ok, m in results if not ok]
-    print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
-    return 1 if failed else 0
+def report(checks: list[tuple[str, str, str]]) -> bool:
+    width = max(len(name) for name, _, _ in checks) if checks else 10
+    for name, state, detail in checks:
+        print(f"{LABELS.get(state, 'FAIL')}  {name.ljust(width)}  {detail}")
+    failures = [name for name, state, _ in checks if state == FAIL]
+    warnings = [name for name, state, _ in checks if state == WARN]
+    passed = sum(1 for _, state, _ in checks if state == PASS)
+    suffix = f"，{len(warnings)} 项警告" if warnings else ""
+    print(f"\n{passed}/{len(checks)} 通过{suffix}")
+    return not failures
+
+
+def main(argv: list[str]) -> int:
+    runtime = "--runtime" in argv
+    cfg = C.config_dir()
+    checks = static_checks(cfg)
+    if runtime:
+        checks += runtime_checks(cfg)
+    return 0 if report(checks) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main(sys.argv[1:]))
