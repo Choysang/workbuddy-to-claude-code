@@ -80,7 +80,19 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - 隔离写入交给 `isolation: worktree` 的 worktree-worker 子代理。
 - 大规模并行改用 TeamCreate、SendMessage 和共享任务清单。
 
-尚未覆盖：TeamCreate 团队并行和 worktree-worker 隔离的端到端调用；同模型同任务的 A/B 通过率（基准见 `bench/README.md`）。
+### 第三轮验收（PID 16364，工程版 `5.8.4-e560fde459a18012`）
+
+`verify --runtime` 36/36。引擎收到 35 项工具，即 19 项常驻加 16 项延迟。
+
+| 项 | 证据 |
+|---|---|
+| 团队并行 | `ToolSearch` 找到 TeamCreate 和 SendMessage，经 DeferExecuteTool 创建团队 `speed-acceptance`。两个 Agent 同批派出（impl-reviewer、test-reviewer，类型为 code-reviewer）并行审查，汇总后用 SendMessage 发出 `shutdown_request`，再用 TeamDelete 清理团队目录，全程 status ok |
+| worktree 隔离 | 隔离 worktree 位于 `D:/workBuddy/harness-selftest-wt-v5`，分支 `v5-gbps-bps`。实现在分支上提交为 `8ea7e1d`（Gbps/bps 解析、拒绝字节单位、溢出保护），之后合回 main，测试通过 |
+| 每轮身份块 | 首轮请求不再包含 `product_identity`、`identity_context`、`connector-status`，只剩 `workspace_profile` |
+| 预批准工具 | `--allowedTools` 只剩 present_files、WebFetch |
+| 首轮请求 | 20,169 prompt tokens |
+
+尚未覆盖：同模型同任务的 A/B 通过率（基准见 `bench/README.md`）。
 
 ## 历史数据更正
 
