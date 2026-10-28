@@ -426,26 +426,33 @@ def cmd_summary(args):
         for line in handle:
             if line.strip():
                 row = json.loads(line)
-                groups[(row["task"], row["build"])].append(row)
+                groups[(row["task"], row["build"], ",".join(row.get("models") or []) or "?")].append(row)
 
     def med(rows, key):
         values = [r[key] for r in rows if r.get(key) is not None]
         return statistics.median(values) if values else None
 
-    header = f"{'task':<18}{'build':<13}{'runs':>5}{'pass':>7}{'calls':>8}{'first_tok':>11}{'main_tok':>11}{'wall_s':>9}{'subagent':>10}"
+    def fixed(row):
+        # Hidden tests passed; for t07_bughunt this is the number of planted bugs fixed.
+        h = row["hidden"]
+        return h["tests"] - h["failures"] - h["errors"] - h.get("skipped", 0)
+
+    header = (f"{'task':<14}{'build':<12}{'model':<22}{'runs':>5}{'pass':>7}{'fixed':>7}{'calls':>7}"
+              f"{'first_tok':>10}{'all_tok':>11}{'wall_s':>8}{'subagent':>9}")
     print(header)
-    for (task, build), rows in sorted(groups.items()):
+    for (task, build, model), rows in sorted(groups.items()):
         passed = sum(1 for r in rows if r["hidden"]["passed"])
         sub = sum(1 for r in rows if r["subagents_dispatched"])
-        print(f"{task:<18}{build:<13}{len(rows):>5}{passed:>4}/{len(rows):<2}{med(rows, 'main_calls')!s:>8}"
-              f"{med(rows, 'first_call_prompt_tokens')!s:>11}{med(rows, 'main_prompt_tokens')!s:>11}"
-              f"{med(rows, 'wall_seconds')!s:>9}{sub:>7}/{len(rows):<2}")
+        fixes = statistics.mean(fixed(r) for r in rows)
+        print(f"{task:<14}{build:<12}{model[:21]:<22}{len(rows):>5}{passed:>4}/{len(rows):<2}{fixes:>7.1f}"
+              f"{med(rows, 'main_calls')!s:>7}{med(rows, 'first_call_prompt_tokens')!s:>10}"
+              f"{med(rows, 'all_prompt_tokens')!s:>11}{med(rows, 'wall_seconds')!s:>8}{sub:>6}/{len(rows):<2}")
     totals = collections.defaultdict(lambda: [0, 0])
-    for (task, build), rows in groups.items():
-        totals[build][0] += sum(1 for r in rows if r["hidden"]["passed"])
-        totals[build][1] += len(rows)
-    for build, (passed, runs) in sorted(totals.items()):
-        print(f"overall {build}: {passed}/{runs} hidden suites passed")
+    for (task, build, model), rows in groups.items():
+        totals[(build, model)][0] += sum(1 for r in rows if r["hidden"]["passed"])
+        totals[(build, model)][1] += len(rows)
+    for (build, model), (passed, runs) in sorted(totals.items()):
+        print(f"overall {build} {model}: {passed}/{runs} hidden suites passed")
     return 0
 
 

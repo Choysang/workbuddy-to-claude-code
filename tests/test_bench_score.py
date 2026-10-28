@@ -154,6 +154,17 @@ class HiddenTestScoringTest(unittest.TestCase):
                 self.assertTrue(hidden["passed"], f"{task}: {hidden['tail']}")
                 self.assertTrue(visible["passed"], f"{task}: {visible['tail']}")
 
+    def test_bughunt_bugs_are_invisible_to_the_visible_suite(self):
+        # Like Bug Hunt Bench: the shipped tests pass and every planted bug still fails its
+        # hidden test, so the score counts only bugs the agent found itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp) / "seed"
+            shutil.copytree(BENCH / "tasks" / "t07_bughunt" / "seed", seed)
+            hidden, visible = score.score_tests(seed, "t07_bughunt")
+            self.assertTrue(visible["passed"], visible["tail"])
+            self.assertEqual(hidden["failures"] + hidden["errors"], hidden["tests"])
+            self.assertGreaterEqual(hidden["tests"], 13)
+
     def test_scoring_does_not_modify_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "t04_build_repair-eng-r1"
@@ -202,7 +213,7 @@ class CommandTest(unittest.TestCase):
 
             code, text = self.run_main(["summary", str(results)])
             self.assertEqual(code, 0)
-            self.assertIn("overall engineering: 0/1", text)
+            self.assertRegex(text, r"overall engineering \S+: 0/1 hidden suites passed")
 
 
 if __name__ == "__main__":
