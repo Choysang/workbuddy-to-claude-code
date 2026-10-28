@@ -315,16 +315,22 @@ def score_tests(workspace, task):
 
 # ---------------------------------------------------------------- commands
 
-def cmd_prepare(args):
-    source = task_dir(args.task) / "seed"
-    target = Path(args.runs_root) / f"{args.task}-{args.build}-r{args.run}"
+def prepare_workspace(task, build, run, runs_root):
+    """Copy the seed into a fresh run folder; return it with the exact first message."""
+    source = task_dir(task) / "seed"
+    target = Path(runs_root) / f"{task}-{build}-r{run}"
     if target.exists():
         raise ValueError(f"refusing to reuse existing workspace {target}; pick another --run or delete it")
     shutil.copytree(source, target, ignore=COPY_IGNORE)
-    prompt = (task_dir(args.task) / "prompt.md").read_text(encoding="utf-8").strip()
+    prompt = (task_dir(task) / "prompt.md").read_text(encoding="utf-8").strip()
+    return target, f"Workspace: {target.as_posix()}\n\n{prompt}\n\n{PROMPT_FOOTER}"
+
+
+def cmd_prepare(args):
+    target, message = prepare_workspace(args.task, args.build, args.run, args.runs_root)
     print(f"workspace: {target}\n")
     print("---- paste everything between the lines as the first and only message ----")
-    print(f"Workspace: {target.as_posix()}\n\n{prompt}\n\n{PROMPT_FOOTER}")
+    print(message)
     print("---- end ----")
     return 0
 

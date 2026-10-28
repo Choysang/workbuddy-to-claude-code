@@ -129,3 +129,20 @@ python bench/make_fixture.py D:/MovedFromC/.workbuddy-ai/traces/<pid>/trace_<id>
 ```
 
 夹具只保留 span 结构、时间、状态、模型名、`harness_profile` 标签、用量和 Agent 的 `subagent_type`；工具输入替换为占位路径 `D:/bench/ws`。
+
+## 跨 harness 对照：Claude Code + DeepSeek
+
+公开基准里没有 deepseek-v4.1-flash 在 WorkBuddy、Claude Code、pi、DeepSeek Harness 上的同模型对比。Terminal-Bench 从 3.0 起每个模型只列一个 harness；Composio 的五 harness 对比用的是 V4 Pro 和非公开的 SaaS 任务。本机没有 Docker，WorkBuddy 也不能无界面运行，官方 Terminal-Bench 跑不了。所以对照用本目录的 6 个隐藏验收任务，记录的指标和 Classmethod 的同模型对比一致：请求数、工具调用、首个请求输入、含缓存的总输入、输出、测试结果。
+
+`run_claude.py` 自动完成一次 Claude Code 运行：
+- 用与 WorkBuddy 相同的种子和第一条消息，`claude -p` 无界面执行。
+- 配置目录为空：没有用户的 CLAUDE.md、hooks、插件和 MCP，即原版 Claude Code。
+- 模型走 DeepSeek 的 Anthropic 兼容接口 `https://api.deepseek.com/anthropic`，所有档位（含子代理）都用 `deepseek-flash`（官方文档说明由 DeepSeek-V4.1-Flash 提供）。
+- 结果以 `build=claude-code` 写进同一个 results.jsonl，`score.py summary` 直接并列比较。原始事件流保存在工作区旁的 `<run>.stream.jsonl`。
+
+```powershell
+$env:DEEPSEEK_API_KEY = "<your key>"
+python bench/run_claude.py t01_bugfix --run 1 --append bench/results/results.jsonl
+```
+
+注意：WorkBuddy 托管的 deepseek-v4.1-flash 与 DeepSeek 官方 API 的 `deepseek-flash` 未必是同一个服务端版本，对比结论要写明这一点。
