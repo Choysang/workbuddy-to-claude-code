@@ -18,6 +18,8 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 |---|---|
 | 会话启动器 `main/node.js` | 把 `A.tools` 替换为工程清单，命令行参数和产品配置环境变量同时生效；`A.tools` 未设置时同样注入；只读模式（工具清单里没有 Write，例如 ask）保留自己的清单 |
 | 运行时参数 `main/server.js` | 冷启动路径使用相同规则；会话 MCP 在数据源 `applyConfig` 处剔除 `tool-control.json` 中禁用的生态服务器（同一份数据同时生成 `--mcp-config` 和 ACP `session/new` 列表，CLI 优先采用后者），项目级 MCP 按同一名单过滤 |
+| 每轮身份块 `user-context-identity.tpl` | 只保留 SOUL/IDENTITY/USER 正文、语气和用户自定义指令；删除人设扮演说明、BOOTSTRAP 引导和“You are WorkBuddy AI, a powerful AI assistant” |
+| 预批准工具 `--allowedTools` | 原厂列表（widget、connect_cloud_service、`Bash(mcporter:*)`、A2A×4）缩为 present_files、WebFetch |
 | 每轮上下文 `main/tar.js` | 删除 `<connector-status>` 块。该块列出生态连接器，还会指示模型调用已禁用的 reconnect_plugin |
 | CLI 技能解析 | 插件来源的内置生态技能在程序层强制 off，不再依赖 `settings.skillOverrides`（桌面端会回写这个字段）；用户自建的同名技能不受影响 |
 | 工具面 | 按 trace 调用量拆分：19 个常驻工具，22 个延迟加载工具（名字常驻，schema 经 ToolSearch 按需加载） |
