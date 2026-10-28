@@ -147,4 +147,8 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 
 修复（`engineering.patch_compaction`）：把阈值默认值从 `.15` 改为 `.02`。1M 上下文下，只有不到约 20K 的历史才原样保留，其余都走引擎自带的 LLM 摘要路径（`runLlmSummaryForPreMessage`），与 Claude Code 的做法一致。环境变量 `CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT` 仍可覆盖。实际效果要等重建工程版、长会话触发一次压缩后，看下一轮 `first` 是否降到几万 token。
 
-未改动的口径：压缩触发点。deepseek 的触发比例来自产品配置（`tokenUsageThresholds.compact.modelOverrides.deepseek = 0.5`），`autoCompactWindow` 未设置，所以 1M 窗口约在 50 万 token 时压缩。是否调低需要用户决定。
+压缩触发点（用户 2026-10-28 拍板：1M 窗口 650K 压缩）。原厂有两条触发路径，日志都对得上：
+- 回合之间（PreMessage）：产品开关关闭了按阈值压缩（日志 `thresholdEnabled=false`），只在缓存过期满 1 小时后、超过窗口 50% 时压缩。femto.tar 就是空闲后在 513K、543K、605K 才压缩。
+- 回合之内（`shouldCompact`）：窗口的 `inputTokens.emergency` = 90%，即 900K。
+
+`patch_compaction` 把两条路径的默认比例都改成 0.65（1M 窗口 650K；选 300K 窗口时约 195K），并默认打开回合之间的阈值压缩。原厂环境变量 `CODEBUDDY_PRE_MESSAGE_COMPACT`、`CODEBUDDY_PRE_MESSAGE_COMPACT_PCT`、`CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE` 仍可覆盖。注意：deepseek-v4.1-flash 默认窗口是 300K，界面选了 1M 才按 1M 计算。

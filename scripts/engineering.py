@@ -112,14 +112,31 @@ def patch_cli(source: bytes) -> bytes:
 # the model for a summary. Vendor default .15 = 150K on a 1M window, estimated as chars/4,
 # which undercounts CJK text: a 67K "estimate" restarted the session at 121K real tokens.
 COMPACT_SUFFICIENCY_RATIO = b".02"
+# User decision 2026-10-28: compact at 650K on a 1M window. Vendor triggers: between turns
+# only after a 1h cache expiry (threshold switched off by a product flag), within a turn at
+# 90% of the window, so long sessions grew past 600K.
+COMPACT_TRIGGER_RATIO = b".65"
 
 
 def patch_compaction(source: bytes) -> bytes:
-    """Make auto-compaction produce a real LLM summary, as Claude Code does."""
-    return replace_once(source,
+    """Compact at a fixed share of the window and produce a real LLM summary, as Claude Code does.
+    The vendor environment variables still override every default."""
+    source = replace_once(source,
         b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return .15;",
         b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return " + COMPACT_SUFFICIENCY_RATIO + b";",
         "compaction summary threshold")
+    source = replace_once(source,
+        b'CODEBUDDY_PRE_MESSAGE_COMPACT;if(void 0!==i&&""!==i)return"true"===i||"1"===i;if(!t)return!1;',
+        b'CODEBUDDY_PRE_MESSAGE_COMPACT;if(void 0!==i&&""!==i)return"true"===i||"1"===i;return!0;',
+        "pre-message compaction switch")
+    source = replace_once(source,
+        b"CODEBUDDY_PRE_MESSAGE_COMPACT_PCT;if(!t)return;",
+        b"CODEBUDDY_PRE_MESSAGE_COMPACT_PCT;if(!t)return " + COMPACT_TRIGGER_RATIO + b";",
+        "pre-message compaction trigger")
+    return replace_once(source,
+        b"CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE;if(!t)return;",
+        b"CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE;if(!t)return " + COMPACT_TRIGGER_RATIO + b";",
+        "in-turn compaction trigger")
 
 
 def _mcp_deny() -> bytes:

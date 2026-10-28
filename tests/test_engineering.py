@@ -38,7 +38,14 @@ def make_archive(path: Path, files: dict[str, bytes]) -> None:
 # Verbatim from the 5.8.4 engine.
 COMPACT_RATIO_SOURCE = (b"function getEngineeringCompactSufficiencyRatio(){let t=process.env."
                         b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return .15;let i=parseInt(t,10);"
-                        b"return isNaN(i)||i<1||i>100?.15:i/100}")
+                        b"return isNaN(i)||i<1||i>100?.15:i/100}"
+                        b"function getAutocompactThresholdOverride(){let t=process.env.CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE;"
+                        b"if(!t)return;let i=parseInt(t,10);if(!isNaN(i)&&!(i<1)&&!(i>100))return i/100}"
+                        b"function getPreMessageCompactThresholdOverride(){let t=process.env.CODEBUDDY_PRE_MESSAGE_COMPACT_PCT;"
+                        b"if(!t)return;let i=parseInt(t,10);if(!isNaN(i)&&!(i<1)&&!(i>100))return i/100}"
+                        b"function resolvePreMessageCompactEnabled(t){let i=process.env.CODEBUDDY_PRE_MESSAGE_COMPACT;"
+                        b'if(void 0!==i&&""!==i)return"true"===i||"1"===i;if(!t)return!1;let n=t.enablePreMessageCompact;'
+                        b'return"boolean"==typeof n?n:!0===t.ContextSummaryAgent}')
 
 
 class ProgramPatchTest(unittest.TestCase):
@@ -185,16 +192,20 @@ console.log('MCP_OK');'''
             self.assertNotIn(dropped, text)
         self.assertEqual(E.IDENTITY, "resources/templates/user-context-identity.tpl")
 
-    def test_auto_compaction_asks_for_a_real_summary(self):
+    def test_auto_compaction_triggers_at_650k_and_summarizes(self):
         patched = E.patch_compaction(COMPACT_RATIO_SOURCE)
         if shutil.which("node"):
-            probe = patched + (b"const a=getEngineeringCompactSufficiencyRatio();"
-                               b"process.env.CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT='30';"
-                               b"console.log(a,getEngineeringCompactSufficiencyRatio())")
+            probe = patched + (b"const f=()=>[getEngineeringCompactSufficiencyRatio(),getAutocompactThresholdOverride(),"
+                               b"getPreMessageCompactThresholdOverride(),"
+                               b"resolvePreMessageCompactEnabled({enablePreMessageCompact:false})].join(' ');"
+                               b"const a=f();Object.assign(process.env,{CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT:'30',"
+                               b"CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE:'80',CODEBUDDY_PRE_MESSAGE_COMPACT_PCT:'70',"
+                               b"CODEBUDDY_PRE_MESSAGE_COMPACT:'0'});console.log(a+'|'+f())")
             result = subprocess.run([shutil.which("node")], input=probe, capture_output=True, timeout=10)
-            # 2% of a 1M window: only a tiny verbatim history skips the LLM summary; the env
-            # override still wins.
-            self.assertEqual(result.stdout.strip(), b"0.02 0.3", result.stderr)
+            # Defaults: summary unless the verbatim history is under 2% of the window; compact at
+            # 65% (650K of 1M) both between and within turns, even when the product flag is off.
+            # The vendor environment variables still win.
+            self.assertEqual(result.stdout.strip(), b"0.02 0.65 0.65 true|0.3 0.8 0.7 false", result.stderr)
         with self.assertRaises(ValueError):
             E.patch_compaction(b"function getEngineeringCompactSufficiencyRatio(){return .15}")
 
