@@ -199,8 +199,11 @@ def _merge_settings(current: dict, cfg: Path, prompt_context: bool = False) -> d
 
 
 def prompt_targets(cfg: Path) -> list[Path]:
-    root = cfg / "plugins" / "cache" / "workbuddy-builtin" / "welcomemode-code"
-    return sorted(root.glob("*/prompt.tpl")) if root.is_dir() else []
+    """Cached welcome-mode prompts. All of them get the coding prompt: automations start in
+    `work`, which otherwise runs the vendor's office assistant prompt."""
+    root = cfg / "plugins" / "cache" / "workbuddy-builtin"
+    return sorted(p for mode in ("code", "work", "design")
+                  for p in (root / f"welcomemode-{mode}").glob("*/prompt.tpl"))
 
 
 def craft_targets(cfg: Path) -> list[Path]:

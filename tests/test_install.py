@@ -43,9 +43,10 @@ def build_config(root: Path) -> None:
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     (root / "rules").mkdir()
     (root / "rules" / "engineering.md").write_text("# old duplicated rules\n", encoding="utf-8")
-    prompt = root / "plugins" / "cache" / "workbuddy-builtin" / "welcomemode-code" / "5.8.4-test"
-    prompt.mkdir(parents=True)
-    (prompt / "prompt.tpl").write_text(ORIGINAL_PROMPT, encoding="utf-8")
+    for mode in ("code", "work"):
+        prompt = root / "plugins" / "cache" / "workbuddy-builtin" / f"welcomemode-{mode}" / "5.8.4-test"
+        prompt.mkdir(parents=True)
+        (prompt / "prompt.tpl").write_text(ORIGINAL_PROMPT, encoding="utf-8")
     craft = root / "plugins" / "cache" / "workbuddy-builtin" / "interactionmode-craft" / "5.8.4-test" / "fragments"
     craft.mkdir(parents=True)
     (craft / "interaction.md").write_text("---\nname: craft\ntools:\n  - A2ASendMessage\n---\n", encoding="utf-8")
@@ -349,9 +350,12 @@ class InstallTest(unittest.TestCase):
 
     def test_apply_replaces_prompt(self) -> None:
         install.apply(cfg=self.cfg)
-        target = install.prompt_targets(self.cfg)[0]
-        self.assertEqual(target.read_bytes(), (C.PROFILE / "prompt" / "prompt.tpl").read_bytes())
-        self.assertIn(C.PROMPT_MARKER, target.read_text(encoding="utf-8"))
+        targets = install.prompt_targets(self.cfg)
+        # Automations start in the `work` welcome mode, so it must get the coding prompt too.
+        self.assertEqual({t.parent.parent.name for t in targets}, {"welcomemode-code", "welcomemode-work"})
+        for target in targets:
+            self.assertEqual(target.read_bytes(), (C.PROFILE / "prompt" / "prompt.tpl").read_bytes())
+            self.assertIn(C.PROMPT_MARKER, target.read_text(encoding="utf-8"))
 
     def test_apply_is_idempotent(self) -> None:
         install.apply(cfg=self.cfg)

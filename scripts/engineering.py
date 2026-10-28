@@ -22,7 +22,10 @@ import install
 EXE = "WorkBuddyAI.exe"
 SERVER = "main/server.js"
 CLI = "cli/dist/codebuddy-lite-wb.mjs"
-PROMPT = "resources/plugins/workbuddy-builtin/welcomemode/code/prompt.tpl"
+# Every welcome mode gets the coding prompt: automations and new chats start in `work`, which
+# otherwise carries the vendor's office/image/video assistant prompt.
+WELCOME_MODES = ("code", "work", "design")
+PROMPTS = tuple(f"resources/plugins/workbuddy-builtin/welcomemode/{mode}/prompt.tpl" for mode in WELCOME_MODES)
 TAR = "main/tar.js"
 IDENTITY = "resources/templates/user-context-identity.tpl"
 NODE = "main/node.js"
@@ -426,7 +429,6 @@ def build(app_dir: Path | None = None, output: Path | None = None,
 
     # Resolve every source anchor and syntax check before copying or writing config.
     modifications = {SERVER: patch_server(archive.read(SERVER)), CLI: patch_cli(archive.read(CLI)),
-                     PROMPT: (C.PROFILE / "prompt/prompt.tpl").read_bytes(),
                      # Per-turn identity block: profile text only, no persona/onboarding/product pitch.
                      IDENTITY: (C.PROFILE / "prompt/user-context-identity.tpl").read_bytes(),
                      TAR: patch_turn_context(archive.read(TAR)),
@@ -434,6 +436,8 @@ def build(app_dir: Path | None = None, output: Path | None = None,
                      NODE: patch_conversation_tools(archive.read(NODE)),
                      "main/index.js": patch_startup_update(archive.read("main/index.js")),
                      "main/update-service.win32.js": patch_windows_updater(archive.read("main/update-service.win32.js"))}
+    for path in PROMPTS:
+        modifications[path] = (C.PROFILE / "prompt/prompt.tpl").read_bytes()
     nav = _unique_asset(archive, r"contexts-[A-Za-z0-9_-]+\.js")
     memory = _unique_asset(archive, r"home-scene-mode-memory-[A-Za-z0-9_-]+\.js")
     modifications[nav] = patch_navigation(archive.read(nav))
