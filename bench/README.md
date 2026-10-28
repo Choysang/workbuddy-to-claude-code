@@ -146,3 +146,22 @@ python bench/run_claude.py t01_bugfix --run 1 --append bench/results/results.jso
 ```
 
 注意：WorkBuddy 托管的 deepseek-v4.1-flash 与 DeepSeek 官方 API 的 `deepseek-flash` 未必是同一个服务端版本，对比结论要写明这一点。
+
+## 免费模型对比（优先级最高，截止 2026-10-31）
+
+WorkBuddy 产品配置（`cache/acc-product-config-v3.json`）里 0 积分的模型只有两个，都是限时免费，`validUntil` 为 2026-11-01 00:00（北京时间）：
+
+| 模型 id | 上下文 | 650K 规则下的压缩点 |
+|---|---|---|
+| `deepseek-v4.1-flash` | 默认 300K，可选 1M | 195K / 650K |
+| `hy3` | 192K | 约 125K |
+
+近乎免费、可作补充的：`deepseek-v4.1-flash-sg`（x0.03）、`glm-5.3-flash`（x0.08）、`minimax-m3.1-flash`（x0.08）。
+
+矩阵：2 个模型 × 2 个版本（stock、eng）× 7 个任务 × N=2，共 56 次。时间紧时先跑 `t07_bughunt` 和 `t02_feature`（最能拉开差距）各 N=3，共 24 次。`score.py summary` 按 任务 × 版本 × 模型 分组，`fixed` 列是隐藏测试通过数（`t07_bughunt` 即修复的植入缺陷数，满分 13）。
+
+## t07_bughunt 与 Bug Hunt Bench 的对应关系
+
+[Bug Hunt Bench](https://github.com/phuryn/bug-hunt-bench) 是目前唯一公开了同一模型（DeepSeek-V4.1-Flash-1017）在多个 harness 下成绩的编码基准：105 个植入缺陷、两个真实 TypeScript 代码库、盲评。max effort 的均值：DeepSeek Harness 42.7、Pi 42.2、Claude Code 39.1、OpenCode 37.6（满分 105）。它的两个代码库和答案不公开，无法本地复现。
+
+`t07_bughunt` 用同样的方法缩小规模：13 个植入缺陷，现有测试全部通过，规格只写在 docstring 里，每个缺陷对应一个隐藏测试，只统计植入缺陷的修复数。分数只能在本仓库内部比较，不能与 Bug Hunt Bench 的数字直接对照。
