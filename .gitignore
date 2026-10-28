@@ -5,3 +5,4 @@ __pycache__/
 backups/
 analysis/
 tests/fixtures/code-prompt-*.tpl
+bench/results/
