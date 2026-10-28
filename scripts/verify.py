@@ -236,6 +236,9 @@ def static_checks(cfg: Path) -> list[tuple[str, str, str]]:
     targets = install.prompt_targets(cfg)
     same = bool(targets) and all(t.read_bytes() == prompt.read_bytes() for t in targets)
     add("系统提示已替换", same, f"{len(targets)} 个目标")
+    crafts = install.craft_targets(cfg)
+    add("craft 模式工具清单", bool(crafts) and all(t.read_bytes() == C.CRAFT_INTERACTION for t in crafts),
+        f"{len(crafts)} 个目标")
 
     plugins = C.read_json(C.PROFILE / "plugins.json", default={}) or {}
     enabled = settings.get("enabledPlugins") or {}

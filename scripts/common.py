@@ -42,17 +42,21 @@ ACTIVE_TOOLS = (
     "Agent", "AskUserQuestion", "Bash", "DeferExecuteTool", "Edit", "Glob", "Grep", "Read",
     "Skill", "TaskCreate", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "ToolSearch",
     "WebFetch", "WebSearch", "Write", "present_files",
+    # Only shown while the session is in plan mode; costs nothing otherwise.
+    "ExitPlanMode",
 )
-# EnterPlanMode/ExitPlanMode, EnterWorktree/LeaveWorktree, Monitor and Workflow are not in the
-# 5.8.4 engine's tool registry (ToolSearch by exact name finds none of them in a live session),
-# so they are not listed. Plan mode is WorkBuddy's plan interaction mode; worktrees go through
-# the worktree-worker agent and git.
 DEFERRED_TOOLS = (
     "PowerShell", "MultiEdit", "NotebookEdit", "LSP", "TaskGet", "SendMessage",
+    "EnterPlanMode", "EnterWorktree", "LeaveWorktree", "Monitor",
     "ListAgents", "InterruptAgent", "TeamCreate", "TeamDelete", "CronCreate", "CronList",
     "CronDelete", "ListMcpResources", "ReadMcpResource", "WaitForMcpServers",
 )
 CODE_TOOLS = ",".join(ACTIVE_TOOLS + tuple(f"Defer({name})" for name in DEFERRED_TOOLS))
+# The engine intersects --tools with the work mode's frontmatter tool list, so craft mode must
+# declare the same profile or tools missing from the vendor list (plan mode, worktrees, Monitor)
+# never reach the session.
+CRAFT_INTERACTION = ("---\nname: craft\ndescription: Coding work mode tool policy (harness profile).\ntools:\n"
+                     + "".join(f"  - {spec}\n" for spec in CODE_TOOLS.split(",")) + "---\n").encode("utf-8")
 
 # Single source of truth for hook wiring. verify cross-checks profile/settings.json
 # against these tables, so a matcher can never drift away from the tools the script

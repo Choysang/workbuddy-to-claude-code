@@ -26,6 +26,7 @@ PROMPT = "resources/plugins/workbuddy-builtin/welcomemode/code/prompt.tpl"
 TAR = "main/tar.js"
 IDENTITY = "resources/templates/user-context-identity.tpl"
 NODE = "main/node.js"
+CRAFT = "resources/plugins/workbuddy-builtin/interactionmode/craft/fragments/interaction.md"
 PATCH_REVISION = 2
 
 
@@ -396,6 +397,7 @@ def build(app_dir: Path | None = None, output: Path | None = None,
                      # Per-turn identity block: profile text only, no persona/onboarding/product pitch.
                      IDENTITY: (C.PROFILE / "prompt/user-context-identity.tpl").read_bytes(),
                      TAR: patch_turn_context(archive.read(TAR)),
+                     CRAFT: C.CRAFT_INTERACTION,
                      NODE: patch_conversation_tools(archive.read(NODE)),
                      "main/index.js": patch_startup_update(archive.read("main/index.js")),
                      "main/update-service.win32.js": patch_windows_updater(archive.read("main/update-service.win32.js"))}

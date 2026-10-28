@@ -203,6 +203,11 @@ def prompt_targets(cfg: Path) -> list[Path]:
     return sorted(root.glob("*/prompt.tpl")) if root.is_dir() else []
 
 
+def craft_targets(cfg: Path) -> list[Path]:
+    root = cfg / "plugins" / "cache" / "workbuddy-builtin" / "interactionmode-craft"
+    return sorted(root.glob("*/fragments/interaction.md")) if root.is_dir() else []
+
+
 def apply(cfg: Path | None = None, dry_run: bool = False,
           prompt_context: bool | None = None, workspaces: list[Path] | None = None) -> dict:
     cfg = Path(cfg or C.config_dir())
@@ -298,6 +303,8 @@ def apply(cfg: Path | None = None, dry_run: bool = False,
     prompt = source_prompt.read_bytes()
     for target in prompt_targets(cfg):
         write(target, prompt, f"prompt {target.relative_to(cfg).as_posix()}")
+    for target in craft_targets(cfg):
+        write(target, C.CRAFT_INTERACTION, f"tools {target.relative_to(cfg).as_posix()}")
 
     for target, data in overlays:
         write(target, data, f"workspace {target.as_posix()}")

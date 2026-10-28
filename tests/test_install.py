@@ -46,6 +46,9 @@ def build_config(root: Path) -> None:
     prompt = root / "plugins" / "cache" / "workbuddy-builtin" / "welcomemode-code" / "5.8.4-test"
     prompt.mkdir(parents=True)
     (prompt / "prompt.tpl").write_text(ORIGINAL_PROMPT, encoding="utf-8")
+    craft = root / "plugins" / "cache" / "workbuddy-builtin" / "interactionmode-craft" / "5.8.4-test" / "fragments"
+    craft.mkdir(parents=True)
+    (craft / "interaction.md").write_text("---\nname: craft\ntools:\n  - A2ASendMessage\n---\n", encoding="utf-8")
 
 
 class InstallTest(unittest.TestCase):
@@ -486,7 +489,7 @@ class InstallTest(unittest.TestCase):
         names = [name for name, _, _ in checks]
         self.assertEqual(len(names), len(set(names)), "校验项名称必须唯一")
         # Guards against a refactor silently dropping checks (early return, exception).
-        self.assertEqual(len(checks), 29, "校验项数量变了就同步更新这里")
+        self.assertEqual(len(checks), 30, "校验项数量变了就同步更新这里")
 
     def test_verify_accepts_source_download_without_git_metadata(self) -> None:
         install.apply(cfg=self.cfg)

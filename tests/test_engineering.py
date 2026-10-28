@@ -154,13 +154,22 @@ console.log('MCP_OK');'''
         self.assertEqual(len(specs), len(set(specs)))
         for name in ("Agent", "Bash", "Read", "Edit", "Write", "Grep", "Glob", "ToolSearch", "DeferExecuteTool"):
             self.assertIn(name, specs)
-        for name in ("PowerShell", "SendMessage", "TeamCreate", "NotebookEdit", "MultiEdit"):
+        for name in ("PowerShell", "SendMessage", "TeamCreate", "NotebookEdit", "EnterPlanMode",
+                     "EnterWorktree", "LeaveWorktree", "Monitor"):
             self.assertIn(f"Defer({name})", specs)
-        # Not registered in the 5.8.4 engine: listing them only sends the model on failed searches.
-        for missing in ("EnterPlanMode", "ExitPlanMode", "EnterWorktree", "LeaveWorktree", "Monitor", "Workflow"):
-            self.assertFalse(any(missing in spec for spec in specs), missing)
+        self.assertIn("ExitPlanMode", specs)
+        # The 5.8.4 engine has no Workflow tool class; listing it only sends the model on failed searches.
+        self.assertFalse(any("Workflow" in spec for spec in specs))
+
+    def test_craft_mode_declares_the_same_tool_profile(self):
+        """The engine intersects --tools with the work-mode frontmatter list."""
+        text = E.C.CRAFT_INTERACTION.decode("utf-8")
+        self.assertTrue(text.startswith("---\nname: craft\n") and text.endswith("---\n"))
+        declared = [line[4:] for line in text.splitlines() if line.startswith("  - ")]
+        self.assertEqual(declared, E.C.CODE_TOOLS.split(","))
+        self.assertEqual(E.CRAFT, "resources/plugins/workbuddy-builtin/interactionmode/craft/fragments/interaction.md")
         for vendor in ("A2ASendMessage", "SkillManage", "show_widget", "widget_guidelines", "ImageGen"):
-            self.assertFalse(any(vendor in spec for spec in specs), vendor)
+            self.assertFalse(any(vendor in spec for spec in declared), vendor)
 
     def test_turn_identity_template_carries_profile_not_product_persona(self):
         text = (E.C.PROFILE / "prompt/user-context-identity.tpl").read_text(encoding="utf-8")

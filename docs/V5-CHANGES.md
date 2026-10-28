@@ -104,3 +104,13 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - v4 工程版：约 2.4–3.1 万。
 
 78% 来自两组样本的会话长度差异。长会话的上下文主要由对话和工具输出累积而成，常在 10–50 万 token 之间。
+
+## 第二轮结论更正：工具被工作模式清单过滤，不是没有注册
+
+继续查源码后确认，EnterPlanMode、ExitPlanMode、EnterWorktree、LeaveWorktree、Monitor 都有实现类，并以 `Component(oZ.NL)` 注册进工具表（Monitor 默认启用）。会话最终可见的工具是 `--tools` 与工作模式 frontmatter（craft 的 `interaction.md`）清单的交集，原厂 craft 清单里没有这几个，所以 ToolSearch 查不到。之前查得到的 PowerShell、TeamCreate、SendMessage 恰好都在原厂清单里，与这个结论一致。
+
+修复：
+- 工程版 ASAR 和插件缓存（`plugins/cache/workbuddy-builtin/interactionmode-craft/*/fragments/interaction.md`）中的 craft 清单都替换成与 `CODE_TOOLS` 逐项一致的工具面，由 `install.apply` 写入，可回滚。
+- verify 增加“craft 模式工具清单”静态检查。
+- 计划模式、worktree、Monitor 重新加入：ExitPlanMode 常驻（只在计划模式下显示），其余延迟加载。
+- Workflow 在 5.8.4 引擎中没有实现类，仍不列入。
