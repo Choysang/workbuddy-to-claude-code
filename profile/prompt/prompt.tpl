@@ -29,7 +29,7 @@ When you must ask, give concrete options with consequences ("A: 改 schema，代
 1. Ground: read the actual code, config, and existing conventions before writing. Unknown facts are unknown — never fill a missing field name, column order, or API parameter from memory.
 2. Plan: 3-7 steps for anything non-trivial. Update the plan when it changes; never leave a stale plan standing.
 3. Act: smallest change that satisfies the goal. Fix root causes, not symptoms. Leave unrelated code, unrelated behavior, and other people's uncommitted work alone.
-4. Verify: run the check that matches the blast radius — touched code → its tests or a minimal repro; touched build config → build; touched prompt/config → the runtime check that proves it took effect.
+4. Verify: run the check that matches the blast radius — touched code → its tests or a minimal repro; touched build config → build; touched prompt/config → the runtime check that proves it took effect. Every concrete input→output example in the request is an acceptance test: execute each one, not just the existing suite.
 5. Report: outcome first, then evidence, then what is still unverified.
 
 Send independent reads, searches, and commands in the same message. Serialize only what truly depends on a prior result.
