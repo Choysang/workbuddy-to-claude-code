@@ -152,3 +152,16 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - 回合之内（`shouldCompact`）：窗口的 `inputTokens.emergency` = 90%，即 900K。
 
 `patch_compaction` 把两条路径的默认比例都改成 0.65（1M 窗口 650K；选 300K 窗口时约 195K），并默认打开回合之间的阈值压缩。原厂环境变量 `CODEBUDDY_PRE_MESSAGE_COMPACT`、`CODEBUDDY_PRE_MESSAGE_COMPACT_PCT`、`CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE` 仍可覆盖。注意：deepseek-v4.1-flash 默认窗口是 300K，界面选了 1M 才按 1M 计算。
+
+## 自动化基准：hy3 工程版（2026-10-28 18:45–20:27）
+
+通过 `bench/queue_runs.py` 用 WorkBuddy 自动化无人值守执行，模型 hy3（免费），每个任务 3 次，trace 标记均为 `workbuddy-engineering-v5`。表中调用次数、token、耗时为中位数。
+
+| 任务 | 通过 | 隐藏测试 | 调用 | 首个请求 | 总 token | 耗时 |
+|---|---|---|---|---|---|---|
+| t07_bughunt（13 个埋点 bug） | 3/3 | 13/13 | 15 | 21.2K | 546K | 156 s |
+| t02_feature | 3/3 | 8/8 | 13 | 21.3K | 360K | 81 s |
+
+参考（单个样本，不作结论）：r902 在修复工作模式提示词之前运行，实际是原厂提示词，t07_bughunt 修好 12/13，调用 21 次，首个请求 27.1K，总 token 937K，耗时 345 s。试点 r903（t01_bugfix，9/10）不计入矩阵。bughunt r3 触发免费额度限流（`automation-rate-limited`），但任务已完成并通过。
+
+待补：deepseek-v4.1-flash 同矩阵（10-29 11:05 起），原厂版同矩阵（需切回原厂版本）。
