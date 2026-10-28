@@ -18,19 +18,23 @@ WorkBuddy 已具备 Read / Edit / Write / Glob / Grep / Bash / Agent / Skill 等
 
 模板按统一 LF 后的字符数比较，不等同于完整请求 token 数；插件和技能来自真实会话的加载记录。**11 个代码代理、10 份命令、3 个默认 hooks；69 项回归、重启后 34/34 检查通过。** [查看当前版本完整验收](docs/V4-ACCEPTANCE.md)。
 
-## 原版亮点保留：431 条 trace 的历史对比
+## v5：工具面真正落地（2026-10-28）
 
-项目首版 README 记录的对比：**每次请求 prompt 中位数从 24.8 万降到 5.5 万 token，约减少 78%。**
+v4 的编码工具清单只补了冷启动路径。实际会话走守护进程预热池，日志里 10-27 至 10-28 全部 9 次会话激活（包括 4 个工程版会话），引擎收到的仍是原厂 43 项工具（A2A、SkillManage、widget 等），weixinpay、sheetagent 的 MCP 子进程也照常启动。v5 修补真正的会话启动器，并改成 Claude Code 式工具面：
 
-| 指标 | 当时改造前 | 当时改造后 |
+| 项 | v4 实际 | v5 |
 |---|---|---|
-| 每次请求 prompt 中位数 | 24.8 万 token | **5.5 万 token** |
-| code 模式系统提示 | 32K 字符，办公助手版 | **14.6K 字符，精简编码版** |
-| 用户规则加载 | 0 条 | **全套 rules 自动注入** |
-| 上下文压缩触发 | 约 900K | **约 800K，1M 窗口** |
-| 工具清单 | 大量 0 调用工具 | **按 trace 统计精简** |
+| 引擎收到的工具 | 原厂 43 项 | **19 项常驻 + 22 项按需加载** |
+| 新会话首轮 prompt | 24,318–27,152 token | **20,340 token（实测 PID 22556）** |
+| 生态 MCP 子进程 | weixinpay、sheetagent、space-library 照常启动 | **启动前从 `--mcp-config` 剔除** |
+| 每轮生态连接器提示 | 注入，且指示调用已禁用工具 | **删除** |
+| 内置生态技能 off | 依赖 settings，桌面端会回写 | **程序层强制** |
+| 计划模式 / worktree / Monitor / Workflow / Notebook / Cron | 不可用 | **按需加载（ToolSearch）** |
+| 验收能否发现此类问题 | 不能，只查了 system 提示 | **`verify --runtime` 直接核对引擎 argv** |
 
-这是首版的历史统计，保留原有口径；当前 5.8.4 的结果见上表。历史出处：[首版 README](https://github.com/Choysang/workbuddy-to-claude-code/blob/37ee31d/README.md)、[5.6.2 评估存档](docs/legacy-eval-5.6.2.md)。
+详见 [V5-CHANGES.md](docs/V5-CHANGES.md)。
+
+**历史数据更正：** 首版 README 的“prompt 中位数 24.8 万 → 5.5 万（-78%）”比较的是会话长度不同的两组样本，不是 harness 的效果。按新会话首轮请求（约等于固定开销）比较：原厂 5.6.2 约 4.5–4.8 万，首版精简约 4.8–5.2 万，原厂 5.8.4 约 4.0 万，v4 工程版约 2.4–3.1 万。历史出处：[首版 README](https://github.com/Choysang/workbuddy-to-claude-code/blob/37ee31d/README.md)、[5.6.2 评估存档](docs/legacy-eval-5.6.2.md)。
 
 ## 快速开始：一条命令生成工程版
 
@@ -80,7 +84,7 @@ python scripts/harness.py build --no-shortcuts
 |---|---|
 | 启动 | 保留显式插件禁用和内置技能 off；桌面与 CLI 插件解析均执行 profile 禁用清单，抵御界面/账号状态重新启用 |
 | 账号合并 | 用户明确的 false 优先，避免账号启用项重新打开插件 |
-| 工具 | 编码工具清单；内置 MCP 只暴露文件展示，停止 ToolSearch 纳入整个生态工具集；保留用户自定义 MCP |
+| 工具 | 会话启动器与冷启动两条路径统一为编码工具面（常驻 19、按需 22）；生态 MCP 不启动；内置 MCP 只暴露文件展示；保留用户自定义 MCP |
 | 技能 | 关闭内置办公、金融、支付、推广、云应用发布与无关多媒体技能；插件技能也遵守 off |
 | 界面 | 默认开发模式；导航保留新任务、项目与历史任务；移除办公模式、生态导航、推广和小程序入口 |
 | 后台 | 停止工程副本的 Claw 频道启动和推送监听；保留现有用户数据 |

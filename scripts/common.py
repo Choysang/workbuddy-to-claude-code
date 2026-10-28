@@ -34,7 +34,22 @@ REMOVED_RULES = ("engineering.md",)
 
 HOOK_SCRIPTS = ("session_start.py", "pre_tool_guard.py", "post_edit_check.py")
 OPTIONAL_HOOKS = {"prompt_submit.py": "UserPromptSubmit"}
-PROMPT_MARKER = "workbuddy-engineering-v4"
+PROMPT_MARKER = "workbuddy-engineering-v5"
+
+# Claude Code shape: the hot path stays resident (by trace call counts), everything else is
+# deferred so its schema costs only a name until ToolSearch loads it.
+ACTIVE_TOOLS = (
+    "Agent", "AskUserQuestion", "Bash", "DeferExecuteTool", "Edit", "Glob", "Grep", "Read",
+    "Skill", "TaskCreate", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "ToolSearch",
+    "WebFetch", "WebSearch", "Write", "present_files",
+)
+DEFERRED_TOOLS = (
+    "PowerShell", "MultiEdit", "NotebookEdit", "LSP", "TaskGet", "SendMessage",
+    "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "LeaveWorktree", "Monitor", "Workflow",
+    "ListAgents", "InterruptAgent", "TeamCreate", "TeamDelete", "CronCreate", "CronList",
+    "CronDelete", "ListMcpResources", "ReadMcpResource", "WaitForMcpServers",
+)
+CODE_TOOLS = ",".join(ACTIVE_TOOLS + tuple(f"Defer({name})" for name in DEFERRED_TOOLS))
 
 # Single source of truth for hook wiring. verify cross-checks profile/settings.json
 # against these tables, so a matcher can never drift away from the tools the script

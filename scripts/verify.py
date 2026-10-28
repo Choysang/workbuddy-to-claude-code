@@ -123,7 +123,7 @@ def static_checks(cfg: Path) -> list[tuple[str, str, str]]:
 
     settings = C.read_json(cfg / "settings.json", default={}) or {}
     absent = [key for key in C.REMOVED_SETTINGS if key in settings]
-    add("办公类配置键已移除", not absent, ",".join(absent))
+    add_volatile("办公类配置键已移除", not absent, ",".join(absent))
 
     permissions = settings.get("permissions") or {}
     add("permissions.defaultMode", permissions.get("defaultMode") == "acceptEdits",
@@ -344,6 +344,42 @@ def _trace_has_profile(path: Path) -> bool:
                and _has_profile_system_input(span.get("toolInput")) for span in data.get("spans", []))
 
 
+def _latest_line(logs: list[Path], pattern: re.Pattern, pid: int | None) -> re.Match | None:
+    """Latest matching log line for pid, ordered by the line's own timestamp, not file mtime."""
+    best, best_stamp = None, ""
+    for log in logs:
+        with log.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = pattern.search(line)
+                if not match or (pid is not None and int(match.group("pid")) != pid):
+                    continue
+                stamp = line[:25]
+                if stamp >= best_stamp:
+                    best, best_stamp = match, stamp
+    return best
+
+
+# Prewarm activation ("args=") or cold start ("[Dispatch] entry opts ... argv=").
+LAUNCH = re.compile(r"\[pid=(?P<pid>\d+)\].*(?:\[Prewarm\] activated pid=\d+ .*?args=|\[Dispatch\] entry opts: .*? argv=)(?P<args>\[.*\])\s*$")
+MCP_CONNECTED = re.compile(r"\[pid=(?P<pid>\d+)\] \[MCP\]\[buildMcpServers\] connected servers=\[(?P<servers>[^\]]*)\]")
+
+
+def _launch_args(logs: list[Path], pid: int | None) -> list[str] | None:
+    """CLI argv as the engine received it (prewarm activation line)."""
+    match = _latest_line(logs, LAUNCH, pid)
+    try:
+        args = json.loads(match.group("args")) if match else None
+    except ValueError:
+        return None
+    return args if isinstance(args, list) else None
+
+
+def _arg_value(args: list[str], flag: str) -> str | None:
+    """Last occurrence wins, as in the CLI's own option parsing."""
+    positions = [i for i, value in enumerate(args) if value == flag and i + 1 < len(args)]
+    return args[positions[-1] + 1] if positions else None
+
+
 def runtime_checks(cfg: Path, pid: int | None = None) -> list[tuple[str, str, str]]:
     checks: list[tuple[str, str, str]] = []
 
@@ -362,7 +398,8 @@ def runtime_checks(cfg: Path, pid: int | None = None) -> list[tuple[str, str, st
         traces = [path for path in traces if path.parent.name == str(pid)]
     scope = f"pid={pid}" if pid is not None else "all traces"
 
-    logs = sorted(cfg.glob("logs/**/harness__*.log"), key=lambda p: p.stat().st_mtime)
+    # Per-workspace session logs are named "<workspace>__<hash>.log".
+    logs = sorted((p for p in cfg.glob("logs/**/*__*.log") if p.is_file()), key=lambda p: p.stat().st_mtime)
     if logs:
         loaded = []
         memory_seen = False
@@ -390,6 +427,23 @@ def runtime_checks(cfg: Path, pid: int | None = None) -> list[tuple[str, str, st
         except OSError:
             continue
     add("系统提示已生效（system 输入）", bool(hit), f"{scope}, {hit or '最近 trace 未见标记'}")
+
+    args = _launch_args(logs, pid)
+    if args is None:
+        add("引擎实际工具清单", WARN, f"{scope}, 日志中未找到启动参数")
+        return checks
+    tools = _arg_value(args, "--tools")
+    add("引擎实际工具清单", tools == C.CODE_TOOLS,
+        f"{scope}, {len(tools.split(',')) if tools else 0} 项" + ("" if tools == C.CODE_TOOLS else f"：{(tools or '')[:120]}"))
+    deny = set(C.read_json(C.PROFILE / "tool-control.json")["disabledMcpServerIds"])
+    connected = _latest_line(logs, MCP_CONNECTED, pid)
+    if connected is None:
+        add("生态 MCP 未启动", WARN, f"{scope}, 日志中未找到 MCP 连接记录")
+    else:
+        servers = {name.strip() for name in connected.group("servers").split(",") if name.strip()}
+        leaked = sorted(servers & deny)
+        add("生态 MCP 未启动", not leaked, f"{scope}, 已连接：{','.join(sorted(servers)) or '无'}"
+            + (f"；仍包含 {','.join(leaked)}" if leaked else ""))
     return checks
 
 

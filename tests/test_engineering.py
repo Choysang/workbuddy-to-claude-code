@@ -54,8 +54,16 @@ class ProgramPatchTest(unittest.TestCase):
         source = (b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t))return"on";let n=i?.[t.name];return n}'
                   b'return i||(this.enabledPluginsCache=n),n}getSettingsScopePriority')
         actual = E.patch_cli(source)
-        self.assertNotIn(b'isPluginSkill(t)', actual)
+        self.assertNotIn(b'isPluginSkill(t))return"on"', actual)
         self.assertIn(b'let n=i?.[t.name];return n', actual)
+        if shutil.which("node"):
+            # Builtin (plugin) ecosystem skills are forced off; a user's own same-named skill is not.
+            probe = b"function isPluginSkill(t){return t.plugin}" + actual.split(b"for(let id of")[0] + (
+                b'console.log(resolveSkillOverrideState({name:"library",plugin:1},{library:"on"}),'
+                b'resolveSkillOverrideState({name:"skill-creator"},{"skill-creator":"on"}),'
+                b'resolveSkillOverrideState({name:"mine",plugin:1},{mine:"on"}))')
+            result = subprocess.run([shutil.which("node")], input=probe, capture_output=True, timeout=10)
+            self.assertEqual(result.stdout.strip(), b"off on on", result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_coding_profile_wins_account_reenable_and_preserves_custom_plugins(self):
@@ -104,6 +112,68 @@ console.log('UPDATER_DISABLED');})().catch(e=>{console.error(e);process.exit(1)}
         result = subprocess.run([shutil.which("node")], input=patched + probe, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"UPDATER_DISABLED", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_conversation_launcher_gets_coding_tools(self):
+        """Prewarm/daemon path: vendor tools never reach the CLI; read-only modes keep their list."""
+        source = b'''function buildConversationAgentCliArgs(e,t){let n=[];e.tools!==void 0&&n.push(`--tools`,e.tools);return n}
+function launch(A){let N=A.tools?A.tools.split(`,`).map(e=>e.trim()):void 0;return{N,args:buildConversationAgentCliArgs(A)}}'''
+        patched = E.patch_conversation_tools(source)
+        probe = b'''
+for(const vendor of ['A2ACancelTask,SkillManage,show_widget,Write,Read',undefined]){
+const r=launch({tools:vendor});
+const tools=r.args[r.args.indexOf('--tools')+1];
+if(!tools||tools.includes('A2A')||tools.includes('SkillManage')||!tools.startsWith('Agent,'))throw Error('vendor tools kept: '+tools);
+if(r.N.join(',')!==tools)throw Error('product config env diverged');
+if(!tools.includes('Defer(Workflow)')||!tools.includes('Defer(EnterPlanMode)'))throw Error('deferred tools missing');}
+const ask=launch({tools:'Read,Grep,Glob'});
+if(ask.args[1]!=='Read,Grep,Glob')throw Error('read-only mode got write tools');
+console.log('LAUNCHER_OK');'''
+        result = subprocess.run([shutil.which("node")], input=patched + probe, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"LAUNCHER_OK", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_session_mcp_source_drops_ecosystem_servers_for_both_transports(self):
+        """The server map feeds both --mcp-config and the ACP session/new list; filter it once."""
+        source = (b"function resolve(y,c){let d=[],cfg;let applyConfig=e=>{if(!e)return;"
+                  b"cfg=JSON.stringify(e.servers);d=Object.keys(e.servers).map(name=>({name}))};applyConfig(y);"
+                  b"let E=new Set(d.map(e=>e.name)),D=[...c.filter(n=>!E.has(n.name)||!1),...d];return{cfg,D}}")
+        patched = E.patch_session_mcp(source)
+        probe = b'''
+const r=resolve({servers:{context7:{},weixinpay:{},sheetagent:{},'space-library':{}}},[{name:'proj'},{name:'miora'}]);
+if(Object.keys(JSON.parse(r.cfg)).join()!=='context7')throw Error('config '+r.cfg);
+if(r.D.map(x=>x.name).join()!=='proj,context7')throw Error('acp '+JSON.stringify(r.D));
+console.log('MCP_OK');'''
+        result = subprocess.run([shutil.which("node")], input=patched + probe, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"MCP_OK", result.stdout)
+
+    def test_tool_profile_keeps_hot_path_resident_and_defers_the_rest(self):
+        specs = E.C.CODE_TOOLS.split(",")
+        self.assertEqual(len(specs), len(set(specs)))
+        for name in ("Agent", "Bash", "Read", "Edit", "Write", "Grep", "Glob", "ToolSearch", "DeferExecuteTool"):
+            self.assertIn(name, specs)
+        for name in ("PowerShell", "Workflow", "EnterPlanMode", "EnterWorktree", "Monitor", "NotebookEdit"):
+            self.assertIn(f"Defer({name})", specs)
+        for vendor in ("A2ASendMessage", "SkillManage", "show_widget", "widget_guidelines", "ImageGen"):
+            self.assertFalse(any(vendor in spec for spec in specs), vendor)
+
+    def test_turn_identity_template_carries_profile_not_product_persona(self):
+        text = (E.C.PROFILE / "prompt/user-context-identity.tpl").read_text(encoding="utf-8")
+        for kept in ("SoulContent", "IdentityContent", "UserContent", "ToneStyleContent", "UserCustomPrompt"):
+            self.assertIn(kept, text)
+        for dropped in ("product_identity", "BOOTSTRAP", "embody its persona", "powerful AI assistant"):
+            self.assertNotIn(dropped, text)
+        self.assertEqual(E.IDENTITY, "resources/templates/user-context-identity.tpl")
+
+    def test_connector_status_reminder_is_dropped(self):
+        source = (b"function renderConnectorStatusBlock(e){return!e||e.length===0?[]:[`<connector-status>`]}"
+                  b"console.log(JSON.stringify(renderConnectorStatusBlock([{configId:1}])))")
+        patched = E.patch_turn_context(source)
+        if shutil.which("node"):
+            result = subprocess.run([shutil.which("node")], input=patched, capture_output=True, timeout=10)
+            self.assertEqual(result.stdout.strip(), b"[]", result.stderr)
 
     def test_archive_growth_preserves_other_entries_and_integrity(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -23,13 +23,10 @@ EXE = "WorkBuddyAI.exe"
 SERVER = "main/server.js"
 CLI = "cli/dist/codebuddy-lite-wb.mjs"
 PROMPT = "resources/plugins/workbuddy-builtin/welcomemode/code/prompt.tpl"
-PATCH_REVISION = 1
-CODE_TOOLS = (
-    "Agent,AskUserQuestion,Bash,Defer(LSP),Defer(TeamCreate),Defer(TeamDelete),"
-    "DeferExecuteTool,Edit,Glob,Grep,ListMcpResources,MultiEdit,PowerShell,Read,"
-    "ReadMcpResource,SendMessage,Skill,TaskCreate,TaskGet,TaskList,TaskOutput,"
-    "TaskStop,TaskUpdate,ToolSearch,WebFetch,WebSearch,Write,present_files"
-)
+TAR = "main/tar.js"
+IDENTITY = "resources/templates/user-context-identity.tpl"
+NODE = "main/node.js"
+PATCH_REVISION = 2
 
 
 def digest(data: bytes) -> str:
@@ -64,8 +61,7 @@ def patch_server(source: bytes) -> bytes:
     original = source[start:end]
     if b"shouldRemoveBuiltinPluginOverride" not in original or b"skillOverrides" not in original:
         raise ValueError("Builtin preference migration body is not the supported implementation")
-    replacement = (b"var __harnessCodeTools=" + json.dumps(CODE_TOOLS).encode("ascii")
-                   + b";async function restoreBuiltinExtensionOverrides(e){return 0}")
+    replacement = b"async function restoreBuiltinExtensionOverrides(e){return 0}"
     source = source[:start] + replacement + source[end:]
     source = replace_once(source,
         b"enabledPlugins:{...asRecord$3(i.enabledPlugins),...r}",
@@ -83,7 +79,14 @@ def patch_server(source: bytes) -> bytes:
         "disable unused Claw channel lifecycle")
     source = replace_once(source,
         b"!f&&e.tools!==void 0&&u.push(`--tools`,normalizeWorkBuddyToolSpecs(e.tools))",
-        b"u.push(`--tools`,__harnessCodeTools)", "coding tools")
+        b"u.push(`--tools`," + _coding_tools(b"e.tools", b"normalizeWorkBuddyToolSpecs(e.tools)") + b")",
+        "coding tools")
+    source = patch_session_mcp(source)
+    # The vendor pre-approves its ecosystem tools on every launch; keep only what still exists.
+    source = replace_once(source,
+        b"FM=[`present_files`,`widget_guidelines`,`show_widget`,`connect_cloud_service`,`connect_open_platform`,"
+        b"`WebFetch`,`Bash(mcporter:*)`,`A2AGetAgentCard`,`A2ASendMessage`,`A2AGetTask`,`A2ACancelTask`]",
+        b"FM=[`present_files`,`WebFetch`]", "pre-approved tools")
     source = replace_once(source,
         b"function resolveSessionBuiltinToolNames(e,n){if(!n)",
         b"function resolveSessionBuiltinToolNames(e,n){e=e.filter(t=>t.name===`present_files`);if(!n)",
@@ -92,10 +95,61 @@ def patch_server(source: bytes) -> bytes:
 
 
 def patch_cli(source: bytes) -> bytes:
+    # Builtin ecosystem skills stay off even after the desktop rewrites settings.skillOverrides.
+    off = json.dumps(C.read_json(C.PROFILE / "builtin-skills-off.json"), ensure_ascii=False,
+                     separators=(",", ":")).encode("utf-8")
     source = replace_once(source,
         b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t))return"on";',
-        b'function resolveSkillOverrideState(t,i){', "plugin skill preference")
+        b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t)&&' + off + b'.includes(t.name))return"off";',
+        "plugin skill preference")
     return _enforce_plugin_profile(source, "cli")
+
+
+def _mcp_deny() -> bytes:
+    """Ecosystem MCP server ids the profile disables, as a JS array literal."""
+    return json.dumps(C.read_json(C.PROFILE / "tool-control.json")["disabledMcpServerIds"],
+                      separators=(",", ":")).encode("ascii")
+
+
+def patch_session_mcp(source: bytes) -> bytes:
+    """Filter at the source: the same server map feeds --mcp-config and the ACP session/new list,
+    and the CLI prefers the ACP list. Disabled ecosystem servers are then never spawned."""
+    deny = _mcp_deny()
+    source = replace_once(source,
+        b"let applyConfig=e=>{if(!e)return;",
+        b"let applyConfig=e=>{if(!e)return;e={...e,servers:Object.fromEntries(Object.entries(e.servers??{})"
+        b".filter(([k])=>!" + deny + b".includes(k)))};",
+        "session MCP servers")
+    return replace_once(source,
+        b"D=[...c.filter(n=>!E.has(n.name)||",
+        b"D=[...c.filter(n=>!" + deny + b".includes(n.name)).filter(n=>!E.has(n.name)||",
+        "project MCP servers")
+
+
+def _coding_tools(current: bytes, fallback: bytes) -> bytes:
+    """JS expression: the coding tool profile, except for a read-only mode (a vendor list without
+    Write, e.g. ask) which keeps its own list."""
+    literal = json.dumps(C.CODE_TOOLS).encode("ascii")
+    return (b"(!" + current + b"||" + current + b".split(`,`).map(t=>t.trim()).includes(`Write`)?"
+            + literal + b":" + fallback + b")")
+
+
+def patch_conversation_tools(source: bytes) -> bytes:
+    """The daemon's conversation launcher (prewarm path) forwards the vendor work-mode tool list
+    to both the CLI args and the product-config env; replace it before either is built."""
+    return replace_once(source,
+        b"N=A.tools?A.tools.split(`,`)",
+        b"N=(A.tools=" + _coding_tools(b"A.tools", b"A.tools") + b",A.tools)?A.tools.split(`,`)",
+        "conversation coding tools")
+
+
+def patch_turn_context(source: bytes) -> bytes:
+    """Drop the per-turn connector status block; it lists ecosystem connectors and tells the
+    model to call disabled plugin tools."""
+    return replace_once(source,
+        b"function renderConnectorStatusBlock(e){return!e||e.length===0?[]:",
+        b"function renderConnectorStatusBlock(e){return[];return!e||e.length===0?[]:",
+        "connector status reminder")
 
 
 def patch_startup_update(source: bytes) -> bytes:
@@ -339,6 +393,10 @@ def build(app_dir: Path | None = None, output: Path | None = None,
     # Resolve every source anchor and syntax check before copying or writing config.
     modifications = {SERVER: patch_server(archive.read(SERVER)), CLI: patch_cli(archive.read(CLI)),
                      PROMPT: (C.PROFILE / "prompt/prompt.tpl").read_bytes(),
+                     # Per-turn identity block: profile text only, no persona/onboarding/product pitch.
+                     IDENTITY: (C.PROFILE / "prompt/user-context-identity.tpl").read_bytes(),
+                     TAR: patch_turn_context(archive.read(TAR)),
+                     NODE: patch_conversation_tools(archive.read(NODE)),
                      "main/index.js": patch_startup_update(archive.read("main/index.js")),
                      "main/update-service.win32.js": patch_windows_updater(archive.read("main/update-service.win32.js"))}
     nav = _unique_asset(archive, r"contexts-[A-Za-z0-9_-]+\.js")

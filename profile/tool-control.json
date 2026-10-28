@@ -8,7 +8,7 @@
     "builtin:WeComReply",
     "builtin:DelegateTool"
   ],
-  "disabledMcpServerIds": ["weixinpay", "miora", "ardot", "netdrive", "sheetagent"],
+  "disabledMcpServerIds": ["weixinpay", "miora", "ardot", "netdrive", "sheetagent", "space-library"],
   "disabledMcpToolIds": [
     "mcp:connector-proxy:connect_cloud_service",
     "mcp:connector-proxy:connect_open_platform",
