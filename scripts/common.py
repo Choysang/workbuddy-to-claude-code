@@ -43,9 +43,12 @@ ACTIVE_TOOLS = (
     "Skill", "TaskCreate", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "ToolSearch",
     "WebFetch", "WebSearch", "Write", "present_files",
 )
+# EnterPlanMode/ExitPlanMode, EnterWorktree/LeaveWorktree, Monitor and Workflow are not in the
+# 5.8.4 engine's tool registry (ToolSearch by exact name finds none of them in a live session),
+# so they are not listed. Plan mode is WorkBuddy's plan interaction mode; worktrees go through
+# the worktree-worker agent and git.
 DEFERRED_TOOLS = (
     "PowerShell", "MultiEdit", "NotebookEdit", "LSP", "TaskGet", "SendMessage",
-    "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "LeaveWorktree", "Monitor", "Workflow",
     "ListAgents", "InterruptAgent", "TeamCreate", "TeamDelete", "CronCreate", "CronList",
     "CronDelete", "ListMcpResources", "ReadMcpResource", "WaitForMcpServers",
 )

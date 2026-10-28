@@ -125,7 +125,7 @@ const r=launch({tools:vendor});
 const tools=r.args[r.args.indexOf('--tools')+1];
 if(!tools||tools.includes('A2A')||tools.includes('SkillManage')||!tools.startsWith('Agent,'))throw Error('vendor tools kept: '+tools);
 if(r.N.join(',')!==tools)throw Error('product config env diverged');
-if(!tools.includes('Defer(Workflow)')||!tools.includes('Defer(EnterPlanMode)'))throw Error('deferred tools missing');}
+if(!tools.includes('Defer(PowerShell)')||!tools.includes('Defer(TeamCreate)'))throw Error('deferred tools missing');}
 const ask=launch({tools:'Read,Grep,Glob'});
 if(ask.args[1]!=='Read,Grep,Glob')throw Error('read-only mode got write tools');
 console.log('LAUNCHER_OK');'''
@@ -154,8 +154,11 @@ console.log('MCP_OK');'''
         self.assertEqual(len(specs), len(set(specs)))
         for name in ("Agent", "Bash", "Read", "Edit", "Write", "Grep", "Glob", "ToolSearch", "DeferExecuteTool"):
             self.assertIn(name, specs)
-        for name in ("PowerShell", "Workflow", "EnterPlanMode", "EnterWorktree", "Monitor", "NotebookEdit"):
+        for name in ("PowerShell", "SendMessage", "TeamCreate", "NotebookEdit", "MultiEdit"):
             self.assertIn(f"Defer({name})", specs)
+        # Not registered in the 5.8.4 engine: listing them only sends the model on failed searches.
+        for missing in ("EnterPlanMode", "ExitPlanMode", "EnterWorktree", "LeaveWorktree", "Monitor", "Workflow"):
+            self.assertFalse(any(missing in spec for spec in specs), missing)
         for vendor in ("A2ASendMessage", "SkillManage", "show_widget", "widget_guidelines", "ImageGen"):
             self.assertFalse(any(vendor in spec for spec in specs), vendor)
 

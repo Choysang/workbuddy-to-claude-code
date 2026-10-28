@@ -22,7 +22,7 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 | 预批准工具 `--allowedTools` | 原厂列表（widget、connect_cloud_service、`Bash(mcporter:*)`、A2A×4）缩为 present_files、WebFetch |
 | 每轮上下文 `main/tar.js` | 删除 `<connector-status>` 块。该块列出生态连接器，还会指示模型调用已禁用的 reconnect_plugin |
 | CLI 技能解析 | 插件来源的内置生态技能在程序层强制 off，不再依赖 `settings.skillOverrides`（桌面端会回写这个字段）；用户自建的同名技能不受影响 |
-| 工具面 | 按 trace 调用量拆分：19 个常驻工具，22 个延迟加载工具（名字常驻，schema 经 ToolSearch 按需加载） |
+| 工具面 | 按 trace 调用量拆分：19 个常驻工具，16 个延迟加载工具（名字常驻，schema 经 ToolSearch 按需加载） |
 | 提示词 | 标记升为 `workbuddy-engineering-v5`；去掉重复的 agent_loop、final_answer、tool_use；增加延迟工具、并行子代理、worktree 隔离、Workflow 扇出和计划模式的用法；结尾段统一为英文 |
 | verify | 新增运行时检查：“引擎实际工具清单”读取预热激活时引擎收到的 argv，“生态 MCP 未启动”读取 CLI 的 `[MCP][buildMcpServers] connected servers` 记录；按行内时间戳取每个 PID 的最新记录；日志匹配从仅 `harness__*.log` 改为所有工作区；`claw` 键回写降级为警告，因为工程版已把 Claw 频道启动改为空操作，该键不会生效 |
 
@@ -66,13 +66,21 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 
 | 项 | 证据 |
 |---|---|
-| 引擎实际工具 | PID 22556 冷启动 `[Dispatch] entry opts … argv` 中 `--tools` 与工程清单逐字一致（19 常驻 + 22 延迟）；`SkillManageTool.isEnabled … enabled=false` |
+| 引擎实际工具 | PID 22556 冷启动 `[Dispatch] entry opts … argv` 中 `--tools` 与工程清单逐字一致（当时 19 常驻 + 22 延迟）；`SkillManageTool.isEnabled … enabled=false` |
 | MCP | 实际连接 `connector-proxy, context7, agentmemory, headroom`；weixinpay、sheetagent、space-library 未出现，对应子进程未启动 |
 | 系统提示 | generation system 输入含 `workbuddy-engineering-v5` |
 | 延迟工具 | 模型调用 `ToolSearch {"tool_names":["PowerShell"]}`，再通过 `DeferExecuteTool` 执行 PowerShell，退出码 0；后续会话（PID 22952）同样经 DeferExecuteTool 跑 pytest，13 passed，新增的 Gbps 用例被收集并通过 |
 | 首轮请求 | PID 22556 首轮 20,340 prompt tokens；v4 工程版首轮 24,318–27,152（PID 25560、18504、20116）、原厂 5.8.4 约 39,556。两者的用户消息不同，只作量级对比 |
 
-尚未覆盖：Workflow、worktree、计划模式、Monitor 的端到端调用；同模型同任务的 A/B 通过率（基准见 `bench/README.md`）。
+### 第二轮验收发现（PID 23672）
+
+模型按名称用 ToolSearch 查找 EnterPlanMode、Workflow、Monitor、EnterWorktree、ExitPlanMode，引擎返回 “No matching tools found”；按关键词搜索只返回 TeamCreate、SendMessage、PowerShell。这几个名字在 5.8.4 引擎的枚举里有，但没有进入工具注册表，`Defer(...)` 只能延迟加载已注册的工具。处理：
+- 从延迟清单和提示词中移除 EnterPlanMode、ExitPlanMode、EnterWorktree、LeaveWorktree、Monitor、Workflow，并加测试锁定。
+- 计划改为“先给出计划、等用户批准”，或切到 WorkBuddy 的 plan 交互模式（只读模式的工具清单原样保留）。
+- 隔离写入交给 `isolation: worktree` 的 worktree-worker 子代理。
+- 大规模并行改用 TeamCreate、SendMessage 和共享任务清单。
+
+尚未覆盖：TeamCreate 团队并行和 worktree-worker 隔离的端到端调用；同模型同任务的 A/B 通过率（基准见 `bench/README.md`）。
 
 ## 历史数据更正
 
