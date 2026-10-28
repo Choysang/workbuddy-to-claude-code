@@ -128,3 +128,23 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - 会话工作目录（`D:/zuomian/idea/harness`）不是 git 仓库时，EnterWorktree 需要显式传入目标仓库，模型为此向用户确认了一次。
 - 计划模式下读取工作区以外的文件需要审批：原权限模式 fullAccess 没有对应的计划策略，引擎回退到默认审批规则。
 - Workflow 在 5.8.4 中没有实现，大规模扇出用 TeamCreate 代替。
+
+## Token 回测：长会话与自动压缩
+
+用户反馈 token 消耗突然变高。用 `python bench/score.py pids --minutes 20000` 回测 10-20 至 10-28 的全部 trace（`first` 是本轮开始时已经带着的上下文，`total` 是本轮所有请求的 prompt token 之和）。
+
+| 样本 | 每轮首个请求 | 单轮合计 | 缓存命中 |
+|---|---|---|---|
+| 工程版新会话（10-28，6 个） | 20–27K | 0.1–0.8M | 79–98% |
+| 原厂新会话（10-26/27） | 28–43K | 0.5–9M | 92–98% |
+| 原厂长会话（10-20 至 10-23） | 18–61 万 | 最高 28M | 97–99.9% |
+| 工程版长会话 femto.tar（10-28，PID 17176、21988） | 12–44 万 | 14–24M | 98.7–99.6% |
+
+结论：
+- 变高的是 femto.tar 这一个会话。它从 10-20 持续到 10-28，共 1363 次工具调用；每次模型请求都要重发全部上下文，所以单轮消耗随会话长度上升。工程版的固定开销没有变大，新会话首个请求仍是约 20K。
+- 根因在引擎的自动压缩。`PreMessage` 策略先做“工程压缩”（`HistoryEngineeringCompactor`）：保留全部用户和助手消息、全部工具调用参数（只省略 `content`/`widget_code`/`new_string` 与工具结果），上一次的压缩内容也原样嵌入。只有估算结果超过上下文预算的 15% 才调用 LLM 摘要；估算按 字符数/4，明显低估中文。
+- 证据：日志 `[Compact:PreMessage] Engineering compact done: 1003 items → 67733 estimated tokens`、`Engineering compact sufficient, skipping LLM summary`；压缩后下一轮实际首个请求 120,787 token（PID 17176）。femto.tar 的两次压缩产物分别是 472,300 和 287,705 字符，内含 609 和 345 条历史工具调用。压缩后会话从 12–19 万 token 重新增长。
+
+修复（`engineering.patch_compaction`）：把阈值默认值从 `.15` 改为 `.02`。1M 上下文下，只有不到约 20K 的历史才原样保留，其余都走引擎自带的 LLM 摘要路径（`runLlmSummaryForPreMessage`），与 Claude Code 的做法一致。环境变量 `CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT` 仍可覆盖。实际效果要等重建工程版、长会话触发一次压缩后，看下一轮 `first` 是否降到几万 token。
+
+未改动的口径：压缩触发点。deepseek 的触发比例来自产品配置（`tokenUsageThresholds.compact.modelOverrides.deepseek = 0.5`），`autoCompactWindow` 未设置，所以 1M 窗口约在 50 万 token 时压缩。是否调低需要用户决定。

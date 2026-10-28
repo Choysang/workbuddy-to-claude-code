@@ -35,6 +35,12 @@ def make_archive(path: Path, files: dict[str, bytes]) -> None:
     path.write_bytes(struct.pack("<II", 4, len(pickle_header)) + pickle_header + body)
 
 
+# Verbatim from the 5.8.4 engine.
+COMPACT_RATIO_SOURCE = (b"function getEngineeringCompactSufficiencyRatio(){let t=process.env."
+                        b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return .15;let i=parseInt(t,10);"
+                        b"return isNaN(i)||i<1||i>100?.15:i/100}")
+
+
 class ProgramPatchTest(unittest.TestCase):
     def test_running_app_rejects_build_before_config_or_copy_work(self):
         with patch.object(E, "_running_workbuddy_pids", return_value=[123]), \
@@ -52,7 +58,7 @@ class ProgramPatchTest(unittest.TestCase):
 
     def test_plugin_skill_override_bypass_is_removed(self):
         source = (b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t))return"on";let n=i?.[t.name];return n}'
-                  b'return i||(this.enabledPluginsCache=n),n}getSettingsScopePriority')
+                  b'return i||(this.enabledPluginsCache=n),n}getSettingsScopePriority' + COMPACT_RATIO_SOURCE)
         actual = E.patch_cli(source)
         self.assertNotIn(b'isPluginSkill(t))return"on"', actual)
         self.assertIn(b'let n=i?.[t.name];return n', actual)
@@ -178,6 +184,19 @@ console.log('MCP_OK');'''
         for dropped in ("product_identity", "BOOTSTRAP", "embody its persona", "powerful AI assistant"):
             self.assertNotIn(dropped, text)
         self.assertEqual(E.IDENTITY, "resources/templates/user-context-identity.tpl")
+
+    def test_auto_compaction_asks_for_a_real_summary(self):
+        patched = E.patch_compaction(COMPACT_RATIO_SOURCE)
+        if shutil.which("node"):
+            probe = patched + (b"const a=getEngineeringCompactSufficiencyRatio();"
+                               b"process.env.CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT='30';"
+                               b"console.log(a,getEngineeringCompactSufficiencyRatio())")
+            result = subprocess.run([shutil.which("node")], input=probe, capture_output=True, timeout=10)
+            # 2% of a 1M window: only a tiny verbatim history skips the LLM summary; the env
+            # override still wins.
+            self.assertEqual(result.stdout.strip(), b"0.02 0.3", result.stderr)
+        with self.assertRaises(ValueError):
+            E.patch_compaction(b"function getEngineeringCompactSufficiencyRatio(){return .15}")
 
     def test_connector_status_reminder_is_dropped(self):
         source = (b"function renderConnectorStatusBlock(e){return!e||e.length===0?[]:[`<connector-status>`]}"

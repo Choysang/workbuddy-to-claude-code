@@ -103,7 +103,23 @@ def patch_cli(source: bytes) -> bytes:
         b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t))return"on";',
         b'function resolveSkillOverrideState(t,i){if(isPluginSkill(t)&&' + off + b'.includes(t.name))return"off";',
         "plugin skill preference")
+    source = patch_compaction(source)
     return _enforce_plugin_profile(source, "cli")
+
+
+# Fraction of the context budget under which auto-compaction keeps the vendor's "engineering
+# compact" (every message and tool-call argument verbatim, results dropped) instead of asking
+# the model for a summary. Vendor default .15 = 150K on a 1M window, estimated as chars/4,
+# which undercounts CJK text: a 67K "estimate" restarted the session at 121K real tokens.
+COMPACT_SUFFICIENCY_RATIO = b".02"
+
+
+def patch_compaction(source: bytes) -> bytes:
+    """Make auto-compaction produce a real LLM summary, as Claude Code does."""
+    return replace_once(source,
+        b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return .15;",
+        b"CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT;if(!t)return " + COMPACT_SUFFICIENCY_RATIO + b";",
+        "compaction summary threshold")
 
 
 def _mcp_deny() -> bytes:

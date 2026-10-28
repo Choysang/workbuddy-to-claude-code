@@ -347,8 +347,13 @@ def cmd_pids(args):
             rows.append((trace["started_at"], directory.name, summary))
     for started, pid, s in sorted(rows):
         hits = "" if s["workspace_tool_hits"] is None else f" ws_hits={s['workspace_tool_hits']}"
+        cached = (f"{100 * s['main_cached_tokens'] / s['main_prompt_tokens']:.0f}%"
+                  if s["main_prompt_tokens"] else "-")
+        # first= is the context already carried into this turn; a large value means a long
+        # conversation, not harness overhead.
         print(f"{started[:19]}  pid={pid:<6} build={s['build']:<11} model={','.join(s['models']) or '?'} "
-              f"calls={s['main_calls']} first={s['first_call_prompt_tokens']}{hits}")
+              f"calls={s['main_calls']} first={s['first_call_prompt_tokens']} "
+              f"total={s['all_prompt_tokens']} cached={cached}{hits}")
     if not rows:
         print(f"no main-agent traces started in the last {args.minutes} minutes under {root}")
     return 0
