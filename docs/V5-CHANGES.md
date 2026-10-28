@@ -114,3 +114,17 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - verify 增加“craft 模式工具清单”静态检查。
 - 计划模式、worktree、Monitor 重新加入：ExitPlanMode 常驻（只在计划模式下显示），其余延迟加载。
 - Workflow 在 5.8.4 引擎中没有实现类，仍不列入。
+
+### 第四轮验收（PID 29400，工程版 `5.8.4-f1f15fe534fd4146`）
+
+| 工具 | 证据 |
+|---|---|
+| ToolSearch | 按名称一次找到 EnterPlanMode、EnterWorktree、LeaveWorktree、Monitor 4 个工具（上一版 0 个） |
+| EnterPlanMode / ExitPlanMode | 经 DeferExecuteTool 进入计划模式，只读调研后把计划写入 `~/.workbuddy-ai/plans/radiant-thunder-lovelace-x4f9GERW.md`。ExitPlanMode 弹出审批（planBytes=1300），用户批准后权限恢复为 fullAccess |
+| EnterWorktree | 执行成功 2 次（326ms、97ms），在 `harness-selftest/.codebuddy/worktrees/feat-tbps-regression` 创建隔离 worktree。实现和回归用例提交为 `46f789f`、`bbaa894`，经 `c769a98` 合回 main |
+| Monitor | 128ms 返回后台句柄（`background mode → returning handle immediately`），3 秒后 pytest 输出以 BackgroundTaskNotifier 事件送达，会话不阻塞 |
+
+已知限制：
+- 会话工作目录（`D:/zuomian/idea/harness`）不是 git 仓库时，EnterWorktree 需要显式传入目标仓库，模型为此向用户确认了一次。
+- 计划模式下读取工作区以外的文件需要审批：原权限模式 fullAccess 没有对应的计划策略，引擎回退到默认审批规则。
+- Workflow 在 5.8.4 中没有实现，大规模扇出用 TeamCreate 代替。
