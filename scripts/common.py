@@ -108,7 +108,19 @@ def write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp-harness")
     temporary.write_bytes(data)
-    os.replace(temporary, path)
+    move(temporary, path)
+
+
+def move(source: Path, target: Path, attempts: int = 8) -> None:
+    """os.replace that waits out the brief locks Windows scanners and indexers put on new files."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.25 * (attempt + 1))
 
 
 def json_bytes(payload) -> bytes:

@@ -26,7 +26,8 @@ CLI = "cli/dist/codebuddy-lite-wb.mjs"
 # otherwise carries the vendor's office/image/video assistant prompt.
 WELCOME_MODES = ("code", "work", "design")
 PROMPTS = tuple(f"resources/plugins/workbuddy-builtin/welcomemode/{mode}/prompt.tpl" for mode in WELCOME_MODES)
-TAR = "main/tar.js"
+# Per-turn context renderer; the vendor moves it between bundles (tar.js in 5.8, authority-snapshot.js in 5.9).
+TURN_CONTEXT_ANCHOR = b"function renderConnectorStatusBlock(e){return!e||e.length===0?[]:"
 IDENTITY = "resources/templates/user-context-identity.tpl"
 NODE = "main/node.js"
 CRAFT = "resources/plugins/workbuddy-builtin/interactionmode/craft/fragments/interaction.md"
@@ -44,17 +45,30 @@ def replace_once(source: bytes, old: bytes, new: bytes, label: str) -> bytes:
     return source.replace(old, new, 1)
 
 
+# Minified identifiers, which the vendor renames on every release.
+ID = rb"[\w$]+"
+
+
+def sub_once(source: bytes, pattern: bytes, repl, label: str) -> bytes:
+    """Like replace_once, but tolerant of renamed minified identifiers."""
+    result, count = re.subn(pattern, repl, source)
+    if count != 1:
+        raise ValueError(f"{label}: expected one source match, found {count}; vendor update needs adaptation")
+    return result
+
+
 def _enforce_plugin_profile(source: bytes, engine: str) -> bytes:
     """The coding edition owns this deny list even if desktop/account state drifts."""
     disabled = C.read_json(C.PROFILE / "plugins.json")["disable"]
     names = json.dumps(disabled, separators=(",", ":")).encode("ascii")
-    if engine == "desktop":
-        old = b"return n||(this.enabledPluginsCache=r),r}getSettingsScopePriority"
-        policy = b"for(let id of " + names + b")r[id]={enabled:!1,scope:Q.CLI};"
-    else:
-        old = b"return i||(this.enabledPluginsCache=n),n}getSettingsScopePriority"
-        policy = b"for(let id of " + names + b")n[id]={enabled:!1,scope:tv.I7.CLI};"
-    return replace_once(source, old, policy + old, "coding plugin profile: " + engine)
+    pattern = rb"return " + ID + rb"\|\|\(this\.enabledPluginsCache=(" + ID + rb")\),\1\}getSettingsScopePriority"
+
+    def policy(m):
+        # Reuse the CLI scope constant the vendor assigns just above (renamed per release).
+        scopes = re.findall(rb"scope:(" + ID + rb"(?:\." + ID + rb")*\.CLI)\}", source[:m.start()])
+        scope = scopes[-1] if scopes else (b"Q.CLI" if engine == "desktop" else b"tv.I7.CLI")
+        return b"for(let id of " + names + b")" + m[1] + b"[id]={enabled:!1,scope:" + scope + b"};" + m[0]
+    return sub_once(source, pattern, policy, "coding plugin profile: " + engine)
 
 
 def patch_server(source: bytes) -> bytes:
@@ -67,33 +81,33 @@ def patch_server(source: bytes) -> bytes:
         raise ValueError("Builtin preference migration body is not the supported implementation")
     replacement = b"async function restoreBuiltinExtensionOverrides(e){return 0}"
     source = source[:start] + replacement + source[end:]
-    source = replace_once(source,
-        b"enabledPlugins:{...asRecord$3(i.enabledPlugins),...r}",
-        b"enabledPlugins:{...r,...asRecord$3(i.enabledPlugins)}", "account plugin precedence")
-    old = (b"function withSessionEnabledPluginSetting(e,n,r){let i=e?.enabledPlugins,"
-           b"a=i&&typeof i==`object`&&!Array.isArray(i)?{...i}:{};"
-           b"return a[n]=r,{...e??{},enabledPlugins:a}}")
-    new = (b"function withSessionEnabledPluginSetting(e,n,r){let i=e?.enabledPlugins,"
-           b"a=i&&typeof i==`object`&&!Array.isArray(i)?{...i}:{};"
-           b"return a[n]=a[n]===!1?!1:r,{...e??{},enabledPlugins:a}}")
-    source = replace_once(source, old, new, "session explicit disable")
+    source = sub_once(source,
+        rb"enabledPlugins:\{\.\.\.(asRecord\$\d+\(" + ID + rb"\.enabledPlugins\)),\.\.\.(" + ID + rb")\}",
+        lambda m: b"enabledPlugins:{..." + m[2] + b",..." + m[1] + b"}", "account plugin precedence")
+    source = sub_once(source,
+        rb"(function withSessionEnabledPluginSetting\(" + ID + rb"," + ID + rb"," + ID
+        + rb"\)\{[^}]*?\{\.\.\." + ID + rb"\}:\{\};return )(" + ID + rb")\[(" + ID + rb")\]=(" + ID + rb"),",
+        lambda m: m[1] + m[2] + b"[" + m[3] + b"]=" + m[2] + b"[" + m[3] + b"]===!1?!1:" + m[4] + b",",
+        "session explicit disable")
     source = replace_once(source,
         b"async start(){try{await this.clawService.startSavedChannels()",
         b"async start(){return;try{await this.clawService.startSavedChannels()",
         "disable unused Claw channel lifecycle")
-    source = replace_once(source,
-        b"!f&&e.tools!==void 0&&u.push(`--tools`,normalizeWorkBuddyToolSpecs(e.tools))",
-        b"u.push(`--tools`," + _coding_tools(b"e.tools", b"normalizeWorkBuddyToolSpecs(e.tools)") + b")",
+    source = sub_once(source,
+        rb"!" + ID + rb"&&e\.tools!==void 0&&(" + ID + rb")\.push\(`--tools`,normalizeWorkBuddyToolSpecs\(e\.tools\)\)",
+        lambda m: m[1] + b".push(`--tools`," + _coding_tools(b"e.tools", b"normalizeWorkBuddyToolSpecs(e.tools)") + b")",
         "coding tools")
     source = patch_session_mcp(source)
     # The vendor pre-approves its ecosystem tools on every launch; keep only what still exists.
-    source = replace_once(source,
-        b"FM=[`present_files`,`widget_guidelines`,`show_widget`,`connect_cloud_service`,`connect_open_platform`,"
-        b"`WebFetch`,`Bash(mcporter:*)`,`A2AGetAgentCard`,`A2ASendMessage`,`A2AGetTask`,`A2ACancelTask`]",
-        b"FM=[`present_files`,`WebFetch`]", "pre-approved tools")
-    source = replace_once(source,
-        b"function resolveSessionBuiltinToolNames(e,n){if(!n)",
-        b"function resolveSessionBuiltinToolNames(e,n){e=e.filter(t=>t.name===`present_files`);if(!n)",
+    source = sub_once(source,
+        rb"(" + ID + rb")=\[`present_files`,`widget_guidelines`,`show_widget`,`connect_cloud_service`,"
+        rb"`connect_open_platform`,`WebFetch`,`Bash\(mcporter:\*\)`,`A2AGetAgentCard`,`A2ASendMessage`,"
+        rb"`A2AGetTask`,`A2ACancelTask`\]",
+        lambda m: m[1] + b"=[`present_files`,`WebFetch`]", "pre-approved tools")
+    source = sub_once(source,
+        rb"function resolveSessionBuiltinToolNames\((" + ID + rb"),(" + ID + rb")\)\{if\(!\2\)",
+        lambda m: b"function resolveSessionBuiltinToolNames(" + m[1] + b"," + m[2] + b"){" + m[1] + b"="
+        + m[1] + b".filter(t=>t.name===`present_files`);if(!" + m[2] + b")",
         "coding builtin MCP surface")
     return _enforce_plugin_profile(source, "desktop")
 
@@ -157,9 +171,10 @@ def patch_session_mcp(source: bytes) -> bytes:
         b"let applyConfig=e=>{if(!e)return;e={...e,servers:Object.fromEntries(Object.entries(e.servers??{})"
         b".filter(([k])=>!" + deny + b".includes(k)))};",
         "session MCP servers")
-    return replace_once(source,
-        b"D=[...c.filter(n=>!E.has(n.name)||",
-        b"D=[...c.filter(n=>!" + deny + b".includes(n.name)).filter(n=>!E.has(n.name)||",
+    return sub_once(source,
+        rb"(" + ID + rb")=\[\.\.\.(" + ID + rb")\.filter\((" + ID + rb")=>!(" + ID + rb")\.has\(\3\.name\)\|\|",
+        lambda m: m[1] + b"=[..." + m[2] + b".filter(" + m[3] + b"=>!" + deny + b".includes(" + m[3] + b".name)).filter("
+        + m[3] + b"=>!" + m[4] + b".has(" + m[3] + b".name)||",
         "project MCP servers")
 
 
@@ -174,26 +189,25 @@ def _coding_tools(current: bytes, fallback: bytes) -> bytes:
 def patch_conversation_tools(source: bytes) -> bytes:
     """The daemon's conversation launcher (prewarm path) forwards the vendor work-mode tool list
     to both the CLI args and the product-config env; replace it before either is built."""
-    return replace_once(source,
-        b"N=A.tools?A.tools.split(`,`)",
-        b"N=(A.tools=" + _coding_tools(b"A.tools", b"A.tools") + b",A.tools)?A.tools.split(`,`)",
-        "conversation coding tools")
+    def coding(m):
+        tools = m[2] + b".tools"
+        return (m[1] + b"=(" + tools + b"=" + _coding_tools(tools, tools) + b"," + tools + b")?"
+                + tools + b".split(`,`)")
+    return sub_once(source, rb"(" + ID + rb")=(" + ID + rb")\.tools\?\2\.tools\.split\(`,`\)", coding,
+                    "conversation coding tools")
 
 
 def patch_turn_context(source: bytes) -> bytes:
     """Drop the per-turn connector status block; it lists ecosystem connectors and tells the
     model to call disabled plugin tools."""
-    return replace_once(source,
-        b"function renderConnectorStatusBlock(e){return!e||e.length===0?[]:",
+    return replace_once(source, TURN_CONTEXT_ANCHOR,
         b"function renderConnectorStatusBlock(e){return[];return!e||e.length===0?[]:",
         "connector status reminder")
 
 
 def patch_startup_update(source: bytes) -> bytes:
-    return replace_once(source,
-        b"async function tryEarlySilentStartupUpdate(e){let n=UpdateFileLogger.getInstance();",
-        b"async function tryEarlySilentStartupUpdate(e){return!1;let n=UpdateFileLogger.getInstance();",
-        "disable edition startup installer")
+    return sub_once(source, rb"(async function tryEarlySilentStartupUpdate\(" + ID + rb"\)\{)",
+                    lambda m: m[1] + b"return!1;", "disable edition startup installer")
 
 
 def patch_windows_updater(source: bytes) -> bytes:
@@ -202,16 +216,18 @@ def patch_windows_updater(source: bytes) -> bytes:
          b"async waitForStartupRestore(){await this.startupRestorePromise}"
          b"async checkForceUpgrade(){}async checkStartupForceAutoUpdate(){}"
          b"async quitAndInstallForStartup(){return!1}"),
-        (b"async restoreDownloadedUpdate(){let e;", b"async restoreDownloadedUpdate(){return;let e;"),
+        (b"async restoreDownloadedUpdate(){", b"async restoreDownloadedUpdate(){return;"),
         (b"async checkForUpdates(e=!1){if(this.checkInProgress){",
          b"async checkForUpdates(e=!1){this.setState(`idle`);return;if(this.checkInProgress){"),
         (b"async downloadUpdate(e){let t=e.productVersion;",
          b"async downloadUpdate(e){return;let t=e.productVersion;"),
-        (b"quitAndInstall(){if(this.fileLogger.info(",
-         b"quitAndInstall(){return!1;if(this.fileLogger.info("),
+        (b"quitAndInstall(){", b"quitAndInstall(){return!1;"),
     )
     for old, new in patches:
         source = replace_once(source, old, new, "disable edition self-update")
+    # 5.9 routes every install path through one method; older builds do not have it.
+    if source.count(b"async installVerifiedUpdate(){") == 1:
+        source = source.replace(b"async installVerifiedUpdate(){", b"async installVerifiedUpdate(){return!1;", 1)
     return source
 
 
@@ -219,8 +235,8 @@ def patch_navigation(source: bytes) -> bytes:
     source = replace_once(source,
         b"r=n.key;if(e.has(r))return;",
         b"r=n.key;if(![`new_task`,`project`].includes(r)||e.has(r))return;", "coding navigation")
-    source = replace_once(source,
-        b"function getVisibleSceneTabOptions(e){return ws()?e.filter(e=>e.id!==`design`):e}",
+    source = sub_once(source,
+        rb"function getVisibleSceneTabOptions\(e\)\{return " + ID + rb"\(\)\?e\.filter\(e=>e\.id!==`design`\):e\}",
         b"function getVisibleSceneTabOptions(e){return e.filter(e=>e.id===`code`)}", "coding mode selector")
     return replace_once(source, b"modes:{defaultSelected:`work`}",
                         b"modes:{defaultSelected:`code`}", "coding default")
@@ -321,6 +337,16 @@ def patch_executable(source: bytes, before: str, after: str) -> bytes:
         if region.count(prefix + old + b'"') != 1:
             raise ValueError("ASAR resource hash record changed; needs adaptation")
     return source[:start] + region.replace(old, new) + source[end:]
+
+
+def _bundle_with(archive: Archive, anchor: bytes) -> str:
+    """The single main-process bundle that contains anchor."""
+    names = [f"main/{name}" for name, node in archive.header["files"]["main"]["files"].items()
+             if name.endswith(".js") and "files" not in node]
+    matches = [name for name in names if anchor in archive.read(name)]
+    if len(matches) != 1:
+        raise ValueError(f"Expected one main bundle with {anchor[:40]!r}, found {len(matches)}; needs adaptation")
+    return matches[0]
 
 
 def _unique_asset(archive: Archive, pattern: str) -> str:
@@ -428,10 +454,11 @@ def build(app_dir: Path | None = None, output: Path | None = None,
         return {"edition": str(target), "version": version, "reused": True}
 
     # Resolve every source anchor and syntax check before copying or writing config.
+    turn_context = _bundle_with(archive, TURN_CONTEXT_ANCHOR)
     modifications = {SERVER: patch_server(archive.read(SERVER)), CLI: patch_cli(archive.read(CLI)),
                      # Per-turn identity block: profile text only, no persona/onboarding/product pitch.
                      IDENTITY: (C.PROFILE / "prompt/user-context-identity.tpl").read_bytes(),
-                     TAR: patch_turn_context(archive.read(TAR)),
+                     turn_context: patch_turn_context(archive.read(turn_context)),
                      CRAFT: C.CRAFT_INTERACTION,
                      NODE: patch_conversation_tools(archive.read(NODE)),
                      "main/index.js": patch_startup_update(archive.read("main/index.js")),
@@ -471,7 +498,8 @@ def build(app_dir: Path | None = None, output: Path | None = None,
                     "profile_sha256": profile_hash, "patch_revision": PATCH_REVISION, "files": files,
                     "integrity_fuses_changed": False, "vendor_installation_modified": False}
         C.write_json(staging / "engineering-manifest.json", manifest)
-        staging.rename(target)
+        # A fresh 200 MB edition stays under antivirus scan for a while; wait up to about a minute.
+        C.move(staging, target, attempts=20)
     except BaseException:
         # Only remove this invocation's freshly created staging directory.
         if staging.parent == parent and staging.name.startswith(".building-") and staging.exists():
