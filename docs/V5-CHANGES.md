@@ -164,4 +164,17 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 
 参考（单个样本，不作结论）：r902 在修复工作模式提示词之前运行，实际是原厂提示词，t07_bughunt 修好 12/13，调用 21 次，首个请求 27.1K，总 token 937K，耗时 345 s。试点 r903（t01_bugfix，9/10）不计入矩阵。bughunt r3 触发免费额度限流（`automation-rate-limited`），但任务已完成并通过。
 
-待补：deepseek-v4.1-flash 同矩阵（10-29 11:05 起），原厂版同矩阵（需切回原厂版本）。
+## 适配 WorkBuddy 5.9.3 与第二轮基准（2026-10-29）
+
+5.9.3 重命名了压缩后的标识符，并把 `renderConnectorStatusBlock` 移到 `main/authority-snapshot.js`。`engineering.py` 改为正则锚点（`sub_once`，标识符用 `[\w$]+` 匹配），按锚点内容定位 bundle（`_bundle_with`），自更新另外拦截 `installVerifiedUpdate`。工程版 `5.9.3-7a4f5188ae10ee7d`，`verify --runtime` 37/37。
+
+hy3 被限流（`automation-rate-limited`）的 3 次不计入：t02_feature r1（2 次调用即中止）、t07_bughunt r3（1/13）和 r1（13/13 通过，但 token 被截断）。
+
+| 版本 | 模型 | 任务 | 有效通过 | 首个请求 | 总 token（中位） | 耗时（中位） |
+|---|---|---|---|---|---|---|
+| 5.9.3 工程版 | hy3 | t07_bughunt | 1/1 | 19.4K | 472K | 400 s |
+| 5.9.3 工程版 | hy3 | t02_feature | 2/2 | 19.5K | 368K | 110 s |
+| 5.9.3 工程版 | deepseek-v4.1-flash | t07_bughunt | 3/3 | 19.6K | 589K | 122 s |
+| 5.9.3 工程版 | deepseek-v4.1-flash | t02_feature | 3/3 | 19.6K | 239K | 60 s |
+
+首个请求在 5.9.3 上比 5.8.4 工程版（21.2K）再少约 1.7K。deepseek 6/6 全部通过，无限流，耗时约为 hy3 的一半。10-28 的原厂版 hy3 4 次 bughunt 均被限流，不可比较；原厂版 5.9.3 对照仍待补（需切回原厂版本）。
