@@ -132,6 +132,16 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual(s["main_tools"], {"Bash": 1})
         self.assertEqual(s["first_call_prompt_tokens"], 5)
 
+    def test_last_activity_uses_latest_span_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_trace(Path(tmp) / "3", [
+                span("agent", "a", name="cli", start="2026-10-28T00:00:00Z", end=None),
+                span("generation", "g", parent="a", start="2026-10-28T00:00:10Z", end="2026-10-28T00:03:00Z"),
+            ])
+            traces = score.collect_traces(tmp, ["3"])
+        self.assertEqual(score.last_activity(traces), score.parse_time("2026-10-28T00:03:00Z"))
+        self.assertIsNone(score.last_activity([]))
+
     def test_time_window_filters_traces(self):
         traces_since = score.collect_traces(FIXTURES, [ENG_PID], since=score.parse_time("2030-01-01T00:00:00Z"))
         self.assertEqual(traces_since, [])

@@ -31,6 +31,8 @@ import score as S
 DB = Path(os.environ.get("WB_DB", r"D:\MovedFromC\.workbuddy-ai\workbuddy.db"))
 QUEUE = S.BENCH_DIR / "results" / "queue.jsonl"
 NAME_PREFIX = "bench "
+# A normal run finishes within a second of its last span; compacted runs measured 190 s+.
+TRACE_GAP_S = 30
 
 
 def connect(readonly=False):
@@ -133,6 +135,10 @@ def cmd_collect(args):
             summary = S.summarize_traces(traces, entry["workspace"])
             hidden, visible = S.score_tests(entry["workspace"], entry["task"])
             warnings = [] if traces else ["no main-agent trace touched the workspace"]
+            last = S.last_activity(traces)
+            if last is not None and finished / 1000 - last.timestamp() > TRACE_GAP_S:
+                warnings.append(f"trace stops {finished / 1000 - last.timestamp():.0f} s before the run finished "
+                                "(context compaction ends the engine trace); calls and tokens undercount")
             if rows[-1][0] != "ACCEPTED" or not rows[-1][2]:
                 warnings.append(f"automation ended as {rows[-1][0]} ({rows[-1][3] or 'no failure code'})")
             result = {"task": entry["task"], "workspace": entry["workspace"], "pids": pids,

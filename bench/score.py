@@ -154,6 +154,15 @@ def in_window(trace, since, until):
     return (since is None or start >= since) and (until is None or start <= until)
 
 
+def last_activity(traces):
+    """Latest span start/end across traces, or None. The engine stops writing a trace after
+    context compaction, so a run that keeps going leaves this well before it finished."""
+    stamps = [parse_time(span.get("endedAt") or span.get("startedAt"))
+              for trace in traces for span in trace["spans"].values()]
+    stamps = [stamp for stamp in stamps if stamp is not None]
+    return max(stamps) if stamps else None
+
+
 def collect_traces(traces_root, pids, since=None, until=None):
     traces = []
     for pid in pids:
