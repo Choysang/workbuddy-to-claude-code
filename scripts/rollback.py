@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import common as C
+import install
 
 
 def pick_backup(cfg: Path, backup: Path | None = None) -> Path | None:
@@ -22,6 +24,15 @@ def pick_backup(cfg: Path, backup: Path | None = None) -> Path | None:
         if value and (Path(value) / "manifest.json").is_file():
             return Path(value)
     return C.latest_backup(cfg)
+
+
+def _settings_merger(cfg: Path):
+    def merge(current: bytes, original: bytes) -> bytes:
+        now, before = json.loads(current), json.loads(original)
+        if not isinstance(now, dict) or not isinstance(before, dict):
+            raise ValueError("settings.json is not an object")
+        return C.json_bytes(install.unmerge_settings(now, before, cfg))
+    return merge
 
 
 def rollback(cfg: Path | None = None, backup: Path | None = None,
@@ -43,7 +54,8 @@ def rollback(cfg: Path | None = None, backup: Path | None = None,
         # tree or write a target, including an absolute manifest path.
         virtual: dict[str, bytes | None] | None = {} if preview else None
         for snapshot in roots:
-            part = C.restore_backup(snapshot, cfg, dry_run=preview, protected=protected, virtual=virtual)
+            part = C.restore_backup(snapshot, cfg, dry_run=preview, protected=protected, virtual=virtual,
+                                    merge={"settings.json": _settings_merger(cfg)})
             for key in result:
                 result[key].extend(part[key])
             protected.update(part["kept"])

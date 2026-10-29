@@ -198,6 +198,74 @@ def _merge_settings(current: dict, cfg: Path, prompt_context: bool = False) -> d
     return data
 
 
+def _restore_entry(target: dict, original: dict, key: str) -> None:
+    if key in original:
+        target[key] = original[key]
+    else:
+        target.pop(key, None)
+
+
+def unmerge_settings(current: dict, original: dict, cfg: Path) -> dict:
+    """Undo _merge_settings on a settings file the user changed after install.
+
+    Only what the harness owns goes back to its pre-install value; every other key,
+    including the user's own plugin, skill and tool choices, stays as it is now.
+    """
+    profile = C.read_json(C.PROFILE / "settings.json") or {}
+    plugins = C.read_json(C.PROFILE / "plugins.json") or {}
+    data = dict(current)
+
+    for key in (*C.REMOVED_SETTINGS, *(k for k in profile if k != "hooks")):
+        _restore_entry(data, original, key)
+
+    sandbox, before = data.get("sandbox"), original.get("sandbox")
+    if isinstance(sandbox, dict) and isinstance(before, dict) and "extraAllowWrite" in before:
+        data["sandbox"] = {**sandbox, "extraAllowWrite": before["extraAllowWrite"]}
+
+    if isinstance(data.get("hooks"), dict):
+        owned = _harness_hook_paths(cfg)
+        hooks: dict = {}
+        for event, groups in data["hooks"].items():
+            kept = []
+            for group in groups:
+                entries = [h for h in group.get("hooks", []) if not _is_harness_hook(h.get("command", ""), owned)]
+                if entries:
+                    kept.append({**group, "hooks": entries})
+            if kept:
+                hooks[event] = kept
+        if hooks or "hooks" in original:
+            data["hooks"] = hooks
+        else:
+            data.pop("hooks")
+
+    def restore_ids(key: str, ids) -> None:
+        if not isinstance(data.get(key), dict):
+            return
+        values, before = dict(data[key]), original.get(key) or {}
+        for name in ids:
+            _restore_entry(values, before, name)
+        data[key] = values
+
+    restore_ids("enabledPlugins", [*plugins.get("disable", []), *plugins.get("keep", [])])
+    restore_ids("skillOverrides", C.read_json(C.PROFILE / "builtin-skills-off.json"))
+
+    control, before = data.get("toolControl"), original.get("toolControl") or {}
+    if isinstance(control, dict):
+        control = dict(control)
+        required_controls = C.read_json(C.PROFILE / "tool-control.json")
+        for key, required in required_controls.items():
+            if isinstance(control.get(key), list):
+                kept_ids = set(before.get(key) or [])
+                control[key] = [v for v in control[key] if v not in required or v in kept_ids]
+        # The harness created the block; drop it again once nothing in it is the user's.
+        leftover = {k: v for k, v in control.items() if k != "version" and v != []}
+        if "toolControl" not in original and not leftover and set(control) <= {"version", *required_controls}:
+            data.pop("toolControl")
+        else:
+            data["toolControl"] = control
+    return data
+
+
 def prompt_targets(cfg: Path) -> list[Path]:
     """Cached welcome-mode prompts. All of them get the coding prompt: automations start in
     `work`, which otherwise runs the vendor's office assistant prompt."""

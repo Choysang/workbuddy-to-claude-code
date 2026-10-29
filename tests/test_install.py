@@ -252,23 +252,40 @@ class InstallTest(unittest.TestCase):
         self.assertIn("CODEBUDDY.md", result["kept"])
         self.assertEqual(existing.read_text(encoding="utf-8"), "new user instructions\n")
 
-    def test_rollback_keeps_hooks_when_user_edited_settings_are_kept(self) -> None:
+    def test_rollback_merges_user_edited_settings(self) -> None:
+        before = self.settings()
         install.apply(cfg=self.cfg)
         settings = self.settings()
         settings["userPreferenceAfterInstall"] = True
+        settings["skillOverrides"]["kb"] = "user-invocable-only"
         (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
         preview = rollback_mod.rollback(cfg=self.cfg, dry_run=True)
         actual = rollback_mod.rollback(cfg=self.cfg)
-        self.assertEqual(preview["kept"], actual["kept"])
-        self.assertIn("settings.json", actual["kept"])
-        self.assertTrue(self.settings()["userPreferenceAfterInstall"])
-        for name in (*C.HOOK_SCRIPTS, "_hooklib.py"):
-            self.assertTrue((self.cfg / "hooks" / name).is_file())
-        probe = self.cfg / "probe.py"
-        probe.write_text("x = 1\n", encoding="utf-8")
-        code, _ = verify._run_hook(self.cfg / "hooks/post_edit_check.py",
-                                   {"tool_name": "Edit", "tool_input": {"file_path": str(probe)}}, self.cfg)
-        self.assertEqual(code, 0)
+        self.assertEqual(preview, {**actual, "dry_run": True})
+        self.assertIn("settings.json", actual["changed"])
+        after = self.settings()
+        self.assertTrue(after["userPreferenceAfterInstall"])
+        self.assertEqual(after["skillOverrides"], {"kb": "user-invocable-only", "daily": "off"})
+        self.assertEqual(after["hooks"], before["hooks"])
+        for key in ("claw", "pluginConfigs", "sandbox", "enabledPlugins"):
+            self.assertEqual(after[key], before[key], key)
+        for key in ("permissions", "toolControl", "memory", "reasoningEffort"):
+            self.assertNotIn(key, after)
+        self.assertFalse((self.cfg / "hooks/session_start.py").exists())
+
+    def test_old_snapshot_without_installed_hash_keeps_later_user_edits(self) -> None:
+        result = install.apply(cfg=self.cfg)
+        manifest = Path(result["state"]["backup"]) / "manifest.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        for entry in data["entries"]:
+            entry.pop("installed_sha256", None)
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        settings = self.settings()
+        settings["skillOverrides"]["handoff"] = "user-invocable-only"
+        (self.cfg / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        rollback_mod.rollback(cfg=self.cfg, backup=manifest.parent)
+        self.assertEqual(self.settings()["skillOverrides"]["handoff"], "user-invocable-only")
+        self.assertNotIn("toolControl", self.settings())
 
     def test_rollback_keeps_recreated_rule(self) -> None:
         install.apply(cfg=self.cfg)

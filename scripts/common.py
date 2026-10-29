@@ -252,7 +252,8 @@ def latest_backup(cfg: Path) -> Path | None:
 
 def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False,
                    protected: set[str] | None = None,
-                   virtual: dict[str, bytes | None] | None = None) -> dict:
+                   virtual: dict[str, bytes | None] | None = None,
+                   merge: dict | None = None) -> dict:
     """Restore a snapshot.
 
     Returns three buckets so the caller can report the truth instead of claiming a
@@ -263,6 +264,10 @@ def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False,
 
     `dry_run` runs the exact same decisions without touching disk, so the preview
     can never disagree with the real run.
+
+    `merge` maps a path to merge(current, backup) -> bytes for files the user and the
+    harness both write. A changed file is merged instead of kept whole, and a snapshot
+    without an installed hash (older format) can no longer overwrite later user edits.
     """
     manifest = read_json(Path(backup_root) / "manifest.json", default={}) or {}
     result = {"changed": [], "kept": [], "missing": []}
@@ -280,10 +285,18 @@ def restore_backup(backup_root: Path, cfg: Path, dry_run: bool = False,
                 continue
             expected = entry.get("installed_sha256")
             source_bytes = source.read_bytes()
-            if entry.get("installed_absent") and current_bytes is not None and current_bytes != source_bytes:
+            merger = (merge or {}).get(entry["path"])
+            if (merger and current_bytes is not None and current_bytes != source_bytes
+                    and not (expected and digest(current_bytes) == expected)):
+                try:
+                    source_bytes = merger(current_bytes, source_bytes)
+                except ValueError:
+                    result["kept"].append(entry["path"])
+                    continue
+            elif entry.get("installed_absent") and current_bytes is not None and current_bytes != source_bytes:
                 result["kept"].append(entry["path"])
                 continue
-            if expected and current_bytes is not None:
+            elif expected and current_bytes is not None:
                 current = digest(current_bytes)
                 if current != expected and current != digest(source_bytes):
                     result["kept"].append(entry["path"])
