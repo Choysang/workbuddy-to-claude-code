@@ -145,7 +145,7 @@ v4 记录的 token 下降来自插件停用和技能清单收缩，工具这一�
 - 根因在引擎的自动压缩。`PreMessage` 策略先做“工程压缩”（`HistoryEngineeringCompactor`）：保留全部用户和助手消息、全部工具调用参数（只省略 `content`/`widget_code`/`new_string` 与工具结果），上一次的压缩内容也原样嵌入。只有估算结果超过上下文预算的 15% 才调用 LLM 摘要；估算按 字符数/4，明显低估中文。
 - 证据：日志 `[Compact:PreMessage] Engineering compact done: 1003 items → 67733 estimated tokens`、`Engineering compact sufficient, skipping LLM summary`；压缩后下一轮实际首个请求 120,787 token（PID 17176）。femto.tar 的两次压缩产物分别是 472,300 和 287,705 字符，内含 609 和 345 条历史工具调用。压缩后会话从 12–19 万 token 重新增长。
 
-修复（`engineering.patch_compaction`）：把阈值默认值从 `.15` 改为 `.02`。1M 上下文下，只有不到约 20K 的历史才原样保留，其余都走引擎自带的 LLM 摘要路径（`runLlmSummaryForPreMessage`），与 Claude Code 的做法一致。环境变量 `CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT` 仍可覆盖。实际效果要等重建工程版、长会话触发一次压缩后，看下一轮 `first` 是否降到几万 token。
+修复（`engineering.patch_compaction`）：把阈值默认值从 `.15` 改为 `.02`。1M 上下文下，只有不到约 20K 的历史才原样保留，其余都走引擎自带的 LLM 摘要路径（`runLlmSummaryForPreMessage`），与 Claude Code 的做法一致。环境变量 `CODEBUDDY_ENGINEERING_COMPACT_SUFFICIENCY_PCT` 仍可覆盖。实测见下文"压缩实测"：压缩后下一次请求降到 22.3K。
 
 压缩触发点（用户 2026-10-28 拍板：1M 窗口 650K 压缩）。原厂有两条触发路径，日志都对得上：
 - 回合之间（PreMessage）：产品开关关闭了按阈值压缩（日志 `thresholdEnabled=false`），只在缓存过期满 1 小时后、超过窗口 50% 时压缩。femto.tar 就是空闲后在 513K、543K、605K 才压缩。
@@ -177,4 +177,38 @@ hy3 被限流（`automation-rate-limited`）的 3 次不计入：t02_feature r1�
 | 5.9.3 工程版 | deepseek-v4.1-flash | t07_bughunt | 3/3 | 19.6K | 589K | 122 s |
 | 5.9.3 工程版 | deepseek-v4.1-flash | t02_feature | 3/3 | 19.6K | 239K | 60 s |
 
-首个请求在 5.9.3 上比 5.8.4 工程版（21.2K）再少约 1.7K。deepseek 6/6 全部通过，无限流，耗时约为 hy3 的一半。10-28 的原厂版 hy3 4 次 bughunt 均被限流，不可比较；原厂版 5.9.3 对照仍待补（需切回原厂版本）。
+首个请求在 5.9.3 上比 5.8.4 工程版（21.2K）再少约 1.7K。deepseek 6/6 全部通过，无限流，耗时约为 hy3 的一半。10-28 的原厂版 hy3 4 次 bughunt 均被限流，不可比较。
+
+### 原厂版对照（5.9.3，deepseek-v4.1-flash，2026-10-29 15:17–16:34）
+
+切回原厂 `D:\Program Files\WorkBuddyAI`（5.9.3），配置回滚到 `20261027-104340-apply` 与 `20261029-100627-apply` 两份备份，确认 5.9.3 提示词无工程标记后运行同一矩阵，随后重新 `apply`。同模型、同版本，各 3 次，中位数：
+
+| 任务 | 版本 | 通过 | 调用 | 首个请求 | 总 token | 耗时 |
+|---|---|---|---|---|---|---|
+| t07_bughunt | 原厂 | 3/3 | 27 | 35.2K | 1,472K | 165 s |
+| t07_bughunt | 工程 | 3/3 | 17 | 19.6K | 589K | 122 s |
+| t02_feature | 原厂 | 3/3 | 11 | 35.3K | 446K | 58 s |
+| t02_feature | 工程 | 3/3 | 10 | 19.6K | 239K | 60 s |
+
+质量持平（6/6 对 6/6），工程版首个请求少 44%，总 token：bughunt 少 60%、feature 少 46%；bughunt 调用次数从 27 降到 17，耗时少 26%。
+
+### 压缩实测（2026-10-29 16:39，PID 26244）
+
+用 `CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE=10`、`CODEBUDDY_PRE_MESSAGE_COMPACT_PCT=10` 启动工程版，跑一次 t07_bughunt（deepseek-v4.1-flash），验证压缩链路本身；默认值 0.65 已在 `codebuddy-lite-wb.mjs` 中静态确认。
+
+- 触发：第 4 次请求后上下文 30.9K，日志 `tokenCount=30935/1000000 (3.1%, threshold=10.0%) ... trigger=emergency_threshold`。比例按模型的 `maxInputTokens`（deepseek 默认 300K）计算，不是日志里显示的 1M 窗口：300K × 10% ≈ 30K。所以默认 0.65 在 deepseek 默认窗口下约 195K 触发，界面选 1M 后才是 650K。
+- 摘要：`Summary Agent succeeded: 2830 estimated tokens`，`session.history trimmed in-place: 37 -> 1`。
+- 压缩后：下一次请求输入 22.3K（系统提示 19.9K + 摘要），任务继续执行，隐藏测试 13/13 通过。
+- 界面"最大模式"会给会话写 `preMessageCompactPct=0`，关闭回合之间的压缩，但不影响回合之内的 0.65 触发。个人账号默认不开最大模式。
+
+副产物：引擎在压缩后不再写这个 trace，基准统计会漏掉压缩之后的调用（这次 trace 只有 5 次调用，日志里有 31 次）。`queue_runs.py collect` 现在会检查最后一个 span 与自动化结束的时间差：正常运行 0.3–0.4 s，这次 194 s；超过 30 s 就输出警告。这次运行在本地结果里单独归为 `compact-test`，不计入矩阵。
+
+### 回滚覆盖用户设置（已修复）
+
+现象：恢复工程版后，首个请求从 19.6K 涨到 20.0K，缓存前缀多出 384 token。原因是对照前用 `rollback --backup 20261027-104340-apply` 回滚，这份旧格式备份的 `settings.json` 没有记录 `installed_sha256`，`restore_backup` 只能整份覆盖。10-27 之后你在设置里改的内容因此丢失：51 项 `skillOverrides`（`off` 和 `user-invocable-only`）、关闭 `agent-browser`、禁用 `connector-proxy`。几个技能重新对模型可见，提示词随之变长。
+
+修复：
+- `restore_backup` 新增 `merge` 参数。`settings.json` 被用户改过，或者备份缺少安装哈希时，回滚不再整份覆盖，也不再整份保留，而是调用 `install.unmerge_settings` 合并。
+- 合并时只把 harness 拥有的部分恢复到安装前的值：profile 顶层键、`claw`/`pluginConfigs`、`sandbox.extraAllowWrite`、harness hook、`plugins.json` 列出的插件、`builtin-skills-off.json` 列出的技能、`tool-control.json` 列出的 ID。其余保持当前状态。
+- 新增测试覆盖两种情况：用户改过设置后回滚，以及旧格式备份回滚。
+- 本机设置已从 `20261029-100627-apply` 备份恢复后重新 `apply`。修复前的文件另存为 `.harness/settings-before-repair-20261029.json`。
